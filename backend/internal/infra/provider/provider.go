@@ -248,6 +248,7 @@ type ImageGenerationRequest struct {
 	Size           string
 	AspectRatio    string
 	Resolution     string
+	TargetMaxEdge  int
 	ResponseFormat string
 	Streaming      bool
 	PartialImages  int
@@ -268,6 +269,7 @@ type ImageEditRequest struct {
 	Size           string
 	AspectRatio    string
 	Resolution     string
+	TargetMaxEdge  int
 	ResponseFormat string
 	Streaming      bool
 	PartialImages  int
@@ -412,6 +414,22 @@ type ImageEditAdapter interface {
 type ImageAssetStore interface {
 	SaveImage(ctx context.Context, data []byte) (media.Asset, error)
 	PublicImageURL(id string) string
+}
+
+type GeneratedImageStore interface {
+	ImageAssetStore
+	ProcessGeneratedImage(ctx context.Context, data []byte, targetMaxEdge int) (ProcessedImage, error)
+	DeleteGeneratedImage(ctx context.Context, id string) error
+}
+
+type ProcessedImage struct {
+	Asset        media.Asset
+	Bytes        []byte
+	Width        int
+	Height       int
+	SourceWidth  int
+	SourceHeight int
+	Upscaled     bool
 }
 
 type VideoAdapter interface {
