@@ -45,6 +45,7 @@ var (
 	ErrVideoInputTooLarge         = errors.New("视频参考图片编码后总输入超过 32 MiB")
 	ErrVideoInputUnavailable      = errors.New("视频临时输入不存在或已过期")
 	ErrLedgerUnavailable          = errors.New("计费账本暂不可用")
+	ErrImageUpscaleDisabled       = errors.New("自动 4K 图片放大未启用")
 )
 
 const responseOwnershipTTL = 30 * 24 * time.Hour
@@ -197,6 +198,7 @@ type Service struct {
 	modelSyncMu                 sync.Mutex
 	modelSyncing                map[uint64]struct{}
 	markBuildChatDeniedAsReauth atomic.Bool
+	imageUpscaleEnabled         atomic.Bool
 }
 
 type teamModelRateLimit struct {
@@ -238,7 +240,12 @@ func NewService(models routeResolver, audits auditRecorder, accounts *accountapp
 		modelSyncing: make(map[uint64]struct{}),
 	}
 	service.UpdateMaxAttempts(maxAttempts)
+	service.imageUpscaleEnabled.Store(true)
 	return service
+}
+
+func (s *Service) UpdateImageUpscaleEnabled(enabled bool) {
+	s.imageUpscaleEnabled.Store(enabled)
 }
 
 // UpdateBuildForbiddenReauthPolicy atomically replaces the Build account invalidation policy.

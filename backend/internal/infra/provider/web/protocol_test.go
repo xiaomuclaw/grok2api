@@ -1365,6 +1365,46 @@ func (imageAssetStoreStub) PublicImageURL(string) string {
 	return "https://api.example/v1/media/images/img_test"
 }
 
+func TestGeneratedImageDataItemUsesProcessedBytesForBase64(t *testing.T) {
+	store := &generatedImageStoreStub{processed: []byte("processed-4k")}
+	adapter := &Adapter{assets: store}
+	item, assetID, err := adapter.generatedImageDataItem(context.Background(), account.Credential{}, imagineImageValue{Blob: "c291cmNl"}, "b64_json", 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assetID != "img_4k" || item["b64_json"] != base64.StdEncoding.EncodeToString(store.processed) || item["width"] != 4096 || item["height"] != 2048 {
+		t.Fatalf("item=%#v assetID=%q", item, assetID)
+	}
+	if !bytes.Equal(store.received, []byte("source")) || store.target != 4096 {
+		t.Fatalf("received=%q target=%d", store.received, store.target)
+	}
+}
+
+type generatedImageStoreStub struct {
+	processed []byte
+	received  []byte
+	target    int
+}
+
+func (s *generatedImageStoreStub) SaveImage(context.Context, []byte) (mediadomain.Asset, error) {
+	return mediadomain.Asset{}, errors.New("legacy save should not be used for 4K")
+}
+
+func (s *generatedImageStoreStub) PublicImageURL(string) string {
+	return "https://api.example/v1/media/images/img_4k"
+}
+
+func (s *generatedImageStoreStub) ProcessGeneratedImage(_ context.Context, data []byte, target int) (provider.ProcessedImage, error) {
+	s.received = append([]byte(nil), data...)
+	s.target = target
+	return provider.ProcessedImage{
+		Asset: mediadomain.Asset{ID: "img_4k", MIMEType: "image/png"}, Bytes: s.processed,
+		Width: 4096, Height: 2048, SourceWidth: 1024, SourceHeight: 512, Upscaled: true,
+	}, nil
+}
+
+func (*generatedImageStoreStub) DeleteGeneratedImage(context.Context, string) error { return nil }
+
 type imageAssetStoreRetryStub struct {
 	failures int
 	calls    int

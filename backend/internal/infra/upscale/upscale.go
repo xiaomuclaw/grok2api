@@ -5,80 +5,130 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/jpeg"
 	"image/png"
+	"math"
+	"strings"
 
-	// 注册 JPEG/GIF 解码器；image.Decode 依赖 init 副作用，缺少即报未知格式。
 	_ "image/gif"
 	_ "image/jpeg"
 
 	"golang.org/x/image/draw"
-	// WebP 解码器：上游图片可能是 WebP。
 	_ "golang.org/x/image/webp"
 )
 
-// Upscaler 图片放大器
-type Upscaler struct{}
+const MaxTargetEdge = 8192
 
-// New 创建一个新的放大器实例
-func New() *Upscaler {
-	return &Upscaler{}
+var slots = make(chan struct{}, 2)
+
+type Result struct {
+	Bytes        []byte
+	MIMEType     string
+	Width        int
+	Height       int
+	SourceWidth  int
+	SourceHeight int
+	Upscaled     bool
 }
 
-// Upscale 将图片放大到目标尺寸（较长边）
-// 使用 CatmullRom 插值算法，质量接近 Lanczos
-func (u *Upscaler) Upscale(ctx context.Context, imgData []byte, targetSize int) ([]byte, error) {
-	// 解码原图
-	img, format, err := image.Decode(bytes.NewReader(imgData))
+func Process(ctx context.Context, data []byte, targetMaxEdge int) (Result, error) {
+	if len(data) == 0 {
+		return Result{}, fmt.Errorf("图片内容为空")
+	}
+	if targetMaxEdge < 0 || targetMaxEdge > MaxTargetEdge {
+		return Result{}, fmt.Errorf("目标长边超出范围: %d", targetMaxEdge)
+	}
+
+	source, format, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("解码图片失败: %w", err)
+		return Result{}, fmt.Errorf("解码图片: %w", err)
 	}
-
-	switch format {
-	case "png", "jpeg", "webp", "gif":
-	default:
-		return nil, fmt.Errorf("不支持的图片格式: %s", format)
-	}
-
-	bounds := img.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
+	bounds := source.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
 	if width <= 0 || height <= 0 {
-		return nil, fmt.Errorf("图片尺寸无效: %dx%d", width, height)
+		return Result{}, fmt.Errorf("图片尺寸无效: %dx%d", width, height)
 	}
-	if targetSize <= 0 || targetSize > 8192 {
-		return nil, fmt.Errorf("目标尺寸超出范围: %d", targetSize)
+	mimeType := sourceMIMEType(format)
+	if targetMaxEdge == 0 || max(width, height) >= targetMaxEdge {
+		return Result{Bytes: data, MIMEType: mimeType, Width: width, Height: height, SourceWidth: width, SourceHeight: height}, nil
 	}
 
-	// 计算缩放比例（保持宽高比）
-	var newWidth, newHeight int
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	case <-ctx.Done():
+		return Result{}, ctx.Err()
+	}
+
+	newWidth, newHeight := targetDimensions(width, height, targetMaxEdge)
+	destination := image.NewNRGBA(image.Rect(0, 0, newWidth, newHeight))
+	draw.CatmullRom.Scale(destination, destination.Bounds(), source, bounds, draw.Src, nil)
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+
+	encoded, outputMIME, err := encode(destination, format)
+	if err != nil {
+		return Result{}, err
+	}
+	actual, _, err := image.DecodeConfig(bytes.NewReader(encoded))
+	if err != nil {
+		return Result{}, fmt.Errorf("校验放大图片: %w", err)
+	}
+	if max(actual.Width, actual.Height) != targetMaxEdge {
+		return Result{}, fmt.Errorf("放大图片尺寸不符合预期: %dx%d", actual.Width, actual.Height)
+	}
+	return Result{
+		Bytes: encoded, MIMEType: outputMIME, Width: actual.Width, Height: actual.Height,
+		SourceWidth: width, SourceHeight: height, Upscaled: true,
+	}, nil
+}
+
+func targetDimensions(width, height, target int) (int, int) {
 	if width >= height {
-		// 横图或正方形：宽度为目标尺寸
-		scale := float64(targetSize) / float64(width)
-		newWidth = targetSize
-		newHeight = int(float64(height) * scale)
-	} else {
-		// 竖图：高度为目标尺寸
-		scale := float64(targetSize) / float64(height)
-		newHeight = targetSize
-		newWidth = int(float64(width) * scale)
+		return target, max(1, int(math.Round(float64(height)*float64(target)/float64(width))))
 	}
+	return max(1, int(math.Round(float64(width)*float64(target)/float64(height)))), target
+}
 
-	// 如果已经是目标尺寸或更大，直接返回原图
-	if width >= newWidth && height >= newHeight {
-		return imgData, nil
+func sourceMIMEType(format string) string {
+	switch strings.ToLower(format) {
+	case "jpeg", "jpg":
+		return "image/jpeg"
+	case "webp":
+		return "image/webp"
+	case "gif":
+		return "image/gif"
+	default:
+		return "image/png"
 	}
+}
 
-	// 创建目标图片
-	dst := image.NewRGBA(image.Rect(0, 0, newWidth, newHeight))
-
-	// 使用 CatmullRom 缩放（高质量，接近 Lanczos）
-	draw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
-
-	// 编码为 PNG
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, dst); err != nil {
-		return nil, fmt.Errorf("编码图片失败: %w", err)
+func encode(image *image.NRGBA, sourceFormat string) ([]byte, string, error) {
+	var output bytes.Buffer
+	switch strings.ToLower(sourceFormat) {
+	case "jpeg", "jpg":
+		if err := jpeg.Encode(&output, image, &jpeg.Options{Quality: 95}); err != nil {
+			return nil, "", fmt.Errorf("编码 JPEG: %w", err)
+		}
+		return output.Bytes(), "image/jpeg", nil
+	case "png":
+		encoder := png.Encoder{CompressionLevel: png.DefaultCompression}
+		if err := encoder.Encode(&output, image); err != nil {
+			return nil, "", fmt.Errorf("编码 PNG: %w", err)
+		}
+		return output.Bytes(), "image/png", nil
+	default:
+		if image.Opaque() {
+			if err := jpeg.Encode(&output, image, &jpeg.Options{Quality: 95}); err != nil {
+				return nil, "", fmt.Errorf("编码 JPEG: %w", err)
+			}
+			return output.Bytes(), "image/jpeg", nil
+		}
+		encoder := png.Encoder{CompressionLevel: png.DefaultCompression}
+		if err := encoder.Encode(&output, image); err != nil {
+			return nil, "", fmt.Errorf("编码 PNG: %w", err)
+		}
+		return output.Bytes(), "image/png", nil
 	}
-
-	return buf.Bytes(), nil
 }

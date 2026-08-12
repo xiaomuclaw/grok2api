@@ -53,6 +53,7 @@ type MediaConfig struct {
 	MaxTotalBytes           int64
 	CleanupThresholdPercent int
 	CleanupInterval         time.Duration
+	ImageUpscaleEnabled     *bool
 }
 
 type ProviderWebConfig struct {
