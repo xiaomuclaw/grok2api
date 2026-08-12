@@ -495,13 +495,13 @@ func TestImageEditAcceptsOfficialJSONShape(t *testing.T) {
 	}
 
 	invalidResolution := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{
-		"model":"grok-imagine-image-edit","prompt":"test","resolution":"4k",
+		"model":"grok-imagine-image-edit","prompt":"test","resolution":"8k",
 		"image":{"url":"https://example.com/input.png"}
 	}`))
 	invalidResolution.Header.Set("Content-Type", "application/json")
 	invalidResolutionRecorder := httptest.NewRecorder()
 	router.ServeHTTP(invalidResolutionRecorder, invalidResolution)
-	if invalidResolutionRecorder.Code != http.StatusBadRequest || !strings.Contains(invalidResolutionRecorder.Body.String(), "resolution 必须是 1k 或 2k") {
+	if invalidResolutionRecorder.Code != http.StatusBadRequest || !strings.Contains(invalidResolutionRecorder.Body.String(), "resolution 必须是 1k、2k 或 4k") {
 		t.Fatalf("invalid resolution status=%d body=%s", invalidResolutionRecorder.Code, invalidResolutionRecorder.Body.String())
 	}
 

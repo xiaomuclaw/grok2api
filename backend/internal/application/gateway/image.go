@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,6 +52,23 @@ type imageProviderSupport func(accountdomain.Provider) bool
 
 type imageExecution func(context.Context, accountdomain.Provider, accountdomain.Credential, string) (*provider.Response, error)
 
+type imageOutputPlan struct {
+	upstreamResolution string
+	targetMaxEdge      int
+}
+
+func planImageOutput(providerValue accountdomain.Provider, operation audit.Operation, requestedResolution string) imageOutputPlan {
+	requestedResolution = strings.ToLower(strings.TrimSpace(requestedResolution))
+	if requestedResolution != "4k" {
+		return imageOutputPlan{upstreamResolution: requestedResolution}
+	}
+	upstreamResolution := "2k"
+	if providerValue == accountdomain.ProviderWeb && operation == audit.OperationImageEdit {
+		upstreamResolution = "1k"
+	}
+	return imageOutputPlan{upstreamResolution: upstreamResolution, targetMaxEdge: 4096}
+}
+
 // GenerateImage 选择支持图片生成的路由和账号，并返回可统一审计的上游响应。
 func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput) (*Result, error) {
 	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImage, modeldomain.CapabilityImage, func(providerValue accountdomain.Provider) bool {
@@ -61,9 +79,10 @@ func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput)
 		if !ok {
 			return nil, ErrNoAvailableAccount
 		}
+		plan := planImageOutput(providerValue, audit.OperationImage, input.Resolution)
 		return adapter.GenerateImage(executionCtx, provider.ImageGenerationRequest{
 			Credential: credential, Model: upstream, Prompt: input.Prompt, Count: input.Count,
-			Size: input.Size, AspectRatio: input.AspectRatio, Resolution: input.Resolution,
+			Size: input.Size, AspectRatio: input.AspectRatio, Resolution: plan.upstreamResolution, TargetMaxEdge: plan.targetMaxEdge,
 			ResponseFormat: input.ResponseFormat, Streaming: input.Streaming, PartialImages: input.PartialImages,
 		})
 	}, input.Streaming, input.Resolution, input.Count, 0)
@@ -79,10 +98,11 @@ func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result,
 		if !ok {
 			return nil, ErrNoAvailableAccount
 		}
+		plan := planImageOutput(providerValue, audit.OperationImageEdit, input.Resolution)
 		return adapter.EditImage(executionCtx, provider.ImageEditRequest{
 			Credential: credential, Model: upstream, Prompt: input.Prompt,
 			ImageURLs: input.ImageURLs, Count: input.Count, Size: input.Size, AspectRatio: input.AspectRatio,
-			Resolution: input.Resolution, ResponseFormat: input.ResponseFormat,
+			Resolution: plan.upstreamResolution, TargetMaxEdge: plan.targetMaxEdge, ResponseFormat: input.ResponseFormat,
 			Streaming: input.Streaming, PartialImages: input.PartialImages,
 		})
 	}, input.Streaming, input.Resolution, input.Count, len(input.ImageURLs))
@@ -112,6 +132,10 @@ func (s *Service) executeImage(
 	route, err := s.selectMediaRoute(routes, key, capability, supports)
 	if err != nil {
 		return nil, err
+	}
+	outputPlan := planImageOutput(route.Provider, operation, resolution)
+	if outputPlan.targetMaxEdge > 0 && !s.imageUpscaleEnabled.Load() {
+		return nil, ErrImageUpscaleDisabled
 	}
 	externalModel := modeldomain.ExternalPublicID(route.Provider, route.PublicID)
 	auditBase := audit.Record{
@@ -148,9 +172,9 @@ func (s *Service) executeImage(
 	var priced bool
 	switch operation {
 	case audit.OperationImage:
-		reservation, priced = audit.EstimateOfficialImageCost(pricingModel, resolution, requestedCount)
+		reservation, priced = audit.EstimateOfficialImageCost(pricingModel, outputPlan.upstreamResolution, requestedCount)
 	case audit.OperationImageEdit:
-		reservation, priced = audit.EstimateOfficialImageEditCost(pricingModel, resolution, requestedCount, inputImageCount)
+		reservation, priced = audit.EstimateOfficialImageEditCost(pricingModel, outputPlan.upstreamResolution, requestedCount, inputImageCount)
 	}
 	reserved := false
 	if priced {
@@ -284,9 +308,9 @@ func (s *Service) executeImage(
 				var priced bool
 				switch operation {
 				case audit.OperationImage:
-					pricing, priced = audit.EstimateOfficialImageCost(pricingModel, resolution, requestedCount)
+					pricing, priced = audit.EstimateOfficialImageCost(pricingModel, outputPlan.upstreamResolution, requestedCount)
 				case audit.OperationImageEdit:
-					pricing, priced = audit.EstimateOfficialImageEditCost(pricingModel, resolution, requestedCount, inputImageCount)
+					pricing, priced = audit.EstimateOfficialImageEditCost(pricingModel, outputPlan.upstreamResolution, requestedCount, inputImageCount)
 				}
 				if priced {
 					record.EstimatedCostInUSDTicks = pricing.CostInUSDTicks
