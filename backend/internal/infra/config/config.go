@@ -202,6 +202,7 @@ type MediaConfig struct {
 	MaxTotalBytes           int64            `yaml:"-"`
 	CleanupThresholdPercent int              `yaml:"-"`
 	CleanupInterval         Duration         `yaml:"-"`
+	ImageUpscaleEnabled     bool             `yaml:"-"`
 	Local                   LocalMediaConfig `yaml:"local"`
 }
 
@@ -816,7 +817,7 @@ func defaultConfig() Config {
 		},
 		Media: MediaConfig{
 			Driver: "local", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30,
-			CleanupThresholdPercent: 80, CleanupInterval: Duration(10 * time.Minute),
+			CleanupThresholdPercent: 80, CleanupInterval: Duration(10 * time.Minute), ImageUpscaleEnabled: true,
 			Local: LocalMediaConfig{Path: "./data/media"},
 		},
 		Routing: RoutingConfig{

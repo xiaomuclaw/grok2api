@@ -49,6 +49,7 @@ type mediaConfigDTO struct {
 	MaxTotalBytes           int64  `json:"maxTotalBytes"`
 	CleanupThresholdPercent int    `json:"cleanupThresholdPercent"`
 	CleanupInterval         string `json:"cleanupInterval"`
+	ImageUpscaleEnabled     *bool  `json:"imageUpscaleEnabled,omitempty"`
 }
 
 type frontendConfigDTO struct {
@@ -217,6 +218,7 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 		Media: settingsapp.MediaConfig{
 			MaxImageBytes: value.Media.MaxImageBytes, MaxTotalBytes: value.Media.MaxTotalBytes,
 			CleanupThresholdPercent: value.Media.CleanupThresholdPercent, CleanupInterval: value.Media.CleanupInterval,
+			ImageUpscaleEnabled: boolValue(value.Media.ImageUpscaleEnabled), ImageUpscaleProvided: value.Media.ImageUpscaleEnabled != nil,
 		},
 		Frontend: settingsapp.FrontendConfig{
 			PublicAPIBaseURL: value.Frontend.PublicAPIBaseURL,
@@ -299,6 +301,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			Media: mediaConfigDTO{
 				MaxImageBytes: config.Media.MaxImageBytes, MaxTotalBytes: config.Media.MaxTotalBytes,
 				CleanupThresholdPercent: config.Media.CleanupThresholdPercent, CleanupInterval: config.Media.CleanupInterval,
+				ImageUpscaleEnabled: boolPointer(config.Media.ImageUpscaleEnabled),
 			},
 			Frontend: frontendConfigDTO{
 				PublicAPIBaseURL: config.Frontend.PublicAPIBaseURL,

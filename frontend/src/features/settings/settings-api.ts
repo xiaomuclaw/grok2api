@@ -16,7 +16,7 @@ export type SettingsConfigDTO = {
   batch: { importConcurrency: number; conversionConcurrency: number; syncConcurrency: number; refreshConcurrency: number; randomDelay: string };
   media: {
     maxImageBytes: number; maxTotalBytes: number; cleanupThresholdPercent: number;
-    cleanupInterval: string;
+    cleanupInterval: string; imageUpscaleEnabled: boolean;
   };
   frontend: { publicApiBaseURL: string };
   routing: {
@@ -113,7 +113,7 @@ const settingsConfigValidator = hasShape({
   }),
   providerConsole: hasShape({ baseURL: isString, chatTimeout: isString, streamIdleTimeout: isOptional(isString) }),
   batch: hasShape({ importConcurrency: isNumber, conversionConcurrency: isNumber, syncConcurrency: isNumber, refreshConcurrency: isNumber, randomDelay: isString }),
-  media: hasShape({ maxImageBytes: isNumber, maxTotalBytes: isNumber, cleanupThresholdPercent: isNumber, cleanupInterval: isString }),
+  media: hasShape({ maxImageBytes: isNumber, maxTotalBytes: isNumber, cleanupThresholdPercent: isNumber, cleanupInterval: isString, imageUpscaleEnabled: isOptional(isBoolean) }),
   frontend: hasShape({ publicApiBaseURL: isString }),
   routing: hasShape({
     stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber, preferFreeBuild: isBoolean, markBuildChatDeniedAsReauth: isBoolean,
@@ -156,6 +156,10 @@ function withSettingsDefaults(snapshot: SettingsSnapshotDTO): SettingsSnapshotDT
       providerConsole: {
         ...snapshot.config.providerConsole,
         streamIdleTimeout: snapshot.config.providerConsole.streamIdleTimeout || "2m",
+      },
+      media: {
+        ...snapshot.config.media,
+        imageUpscaleEnabled: snapshot.config.media.imageUpscaleEnabled ?? true,
       },
       audit: {
         ...snapshot.config.audit,
