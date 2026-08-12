@@ -37,6 +37,7 @@ func (h *Handler) RegisterAdmin(router *gin.RouterGroup) {
 	router.GET("/media/images", h.listImages)
 	router.DELETE("/media/images", h.deleteImages)
 	router.GET("/media/images/stats", h.imageStats)
+	router.POST("/media/images/:id/upscale", h.upscaleImage)
 	router.POST("/media/inputs/import", h.importInputImageFromURL)
 	router.POST("/media/inputs/upload", h.uploadInputImage)
 	router.GET("/media/videos", h.listVideos)
@@ -242,4 +243,48 @@ func parsePagination(c *gin.Context) (int, int) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
 	return repository.NormalizePage(page, pageSize, repository.DefaultPageSize)
+}
+
+// upscaleImage 放大指定图片到目标尺寸，返回新图片 URL。
+// @Summary 放大图片
+// @Description 将指定图片放大到目标尺寸（2048 或 4096），保持宽高比
+// @Tags 媒体管理
+// @Accept json
+// @Produce json
+// @Param id path string true "图片 ID"
+// @Param size query int true "目标尺寸 (2048 或 4096)"
+// @Success 200 {object} map[string]interface{} "url: 新图片 URL"
+// @Failure 400 {object} map[string]interface{} "请求参数无效"
+// @Failure 404 {object} map[string]interface{} "图片不存在"
+// @Failure 500 {object} map[string]interface{} "放大失败"
+// @Router /admin/api/v1/media/images/{id}/upscale [post]
+func (h *Handler) upscaleImage(c *gin.Context) {
+	imageID := c.Param("id")
+	targetSize, _ := strconv.Atoi(c.Query("size"))
+	
+	if targetSize != 2048 && targetSize != 4096 {
+		response.Error(c, http.StatusBadRequest, "invalidSize", "size 必须是 2048 或 4096")
+		return
+	}
+
+	newAsset, err := h.service.UpscaleImage(c.Request.Context(), imageID, targetSize)
+	if errors.Is(err, mediaapp.ErrAssetNotFound) {
+		response.Error(c, http.StatusNotFound, "imageNotFound", "图片不存在")
+		return
+	}
+	if errors.Is(err, mediaapp.ErrUpscaleFailed) {
+		response.Error(c, http.StatusInternalServerError, "upscaleFailed", err.Error())
+		return
+	}
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "upscaleError", "放大图片失败")
+		return
+	}
+
+	response.Success(c, http.StatusOK, gin.H{
+		"url":       h.service.PublicImageURL(newAsset.ID),
+		"id":        newAsset.ID,
+		"size":      newAsset.SizeBytes,
+		"mime_type": newAsset.MIMEType,
+	})
 }
