@@ -7,7 +7,13 @@ import (
 	"image"
 	"image/png"
 
+	// 注册 JPEG/GIF 解码器；image.Decode 依赖 init 副作用，缺少即报未知格式。
+	_ "image/gif"
+	_ "image/jpeg"
+
 	"golang.org/x/image/draw"
+	// WebP 解码器：上游图片可能是 WebP。
+	_ "golang.org/x/image/webp"
 )
 
 // Upscaler 图片放大器
@@ -27,14 +33,21 @@ func (u *Upscaler) Upscale(ctx context.Context, imgData []byte, targetSize int) 
 		return nil, fmt.Errorf("解码图片失败: %w", err)
 	}
 
-	// 只支持常见格式
-	if format != "png" && format != "jpeg" {
+	switch format {
+	case "png", "jpeg", "webp", "gif":
+	default:
 		return nil, fmt.Errorf("不支持的图片格式: %s", format)
 	}
 
 	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("图片尺寸无效: %dx%d", width, height)
+	}
+	if targetSize <= 0 || targetSize > 8192 {
+		return nil, fmt.Errorf("目标尺寸超出范围: %d", targetSize)
+	}
 
 	// 计算缩放比例（保持宽高比）
 	var newWidth, newHeight int

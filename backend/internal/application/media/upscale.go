@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/infra/upscale"
@@ -18,13 +19,13 @@ var (
 // targetSize 是输出图片较长边的像素数（如 2048、4096）。
 func (s *Service) UpscaleImage(ctx context.Context, imageID string, targetSize int) (mediadomain.Asset, error) {
 	// 读取原图
-	asset, body, err := s.OpenImage(ctx, imageID)
+	_, body, err := s.OpenImage(ctx, imageID)
 	if err != nil {
 		return mediadomain.Asset{}, err
 	}
 	defer body.Close()
 
-	raw, err := readAll(body, s.maxImageBytes*2) // 允许放大后的图片更大
+	raw, err := readAll(body, s.runtimeConfig().MaxImageBytes*2) // 放大后的图片会更大
 	if err != nil {
 		return mediadomain.Asset{}, fmt.Errorf("读取原图: %w", err)
 	}
@@ -45,31 +46,14 @@ func (s *Service) UpscaleImage(ctx context.Context, imageID string, targetSize i
 	return newAsset, nil
 }
 
-func readAll(r interface{ Read([]byte) (int, error) }, maxBytes int64) ([]byte, error) {
-	buf := make([]byte, 0, 32*1024)
-	for {
-		if len(buf) == cap(buf) {
-			newCap := cap(buf) * 2
-			if int64(newCap) > maxBytes {
-				newCap = int(maxBytes)
-			}
-			if newCap == cap(buf) {
-				return nil, ErrInvalidImage
-			}
-			newBuf := make([]byte, len(buf), newCap)
-			copy(newBuf, buf)
-			buf = newBuf
-		}
-		n, err := r.Read(buf[len(buf):cap(buf)])
-		buf = buf[:len(buf)+n]
-		if err != nil {
-			if err.Error() == "EOF" {
-				return buf, nil
-			}
-			return nil, err
-		}
-		if int64(len(buf)) > maxBytes {
-			return nil, ErrInvalidImage
-		}
+// readAll 读取至多 maxBytes 字节；超限视为无效图片，避免无界内存增长。
+func readAll(r io.Reader, maxBytes int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil {
+		return nil, err
 	}
+	if int64(len(data)) > maxBytes {
+		return nil, ErrInvalidImage
+	}
+	return data, nil
 }

@@ -245,23 +245,13 @@ func parsePagination(c *gin.Context) (int, int) {
 	return repository.NormalizePage(page, pageSize, repository.DefaultPageSize)
 }
 
-// upscaleImage 放大指定图片到目标尺寸，返回新图片 URL。
-// @Summary 放大图片
-// @Description 将指定图片放大到目标尺寸（2048 或 4096），保持宽高比
-// @Tags 媒体管理
-// @Accept json
-// @Produce json
-// @Param id path string true "图片 ID"
-// @Param size query int true "目标尺寸 (2048 或 4096)"
-// @Success 200 {object} map[string]interface{} "url: 新图片 URL"
-// @Failure 400 {object} map[string]interface{} "请求参数无效"
-// @Failure 404 {object} map[string]interface{} "图片不存在"
-// @Failure 500 {object} map[string]interface{} "放大失败"
-// @Router /admin/api/v1/media/images/{id}/upscale [post]
+// upscaleImage 放大指定图片到 2048 或 4096 像素（较长边），保存为新图片并返回其地址。
+// 原图保持不变。刻意不加 Swagger 注解：仓库 CI 会校验 docs.go 与注解一致，
+// 而 docs.go 是上游生成物，改动它会在每次合并上游时冲突。
 func (h *Handler) upscaleImage(c *gin.Context) {
 	imageID := c.Param("id")
 	targetSize, _ := strconv.Atoi(c.Query("size"))
-	
+
 	if targetSize != 2048 && targetSize != 4096 {
 		response.Error(c, http.StatusBadRequest, "invalidSize", "size 必须是 2048 或 4096")
 		return
