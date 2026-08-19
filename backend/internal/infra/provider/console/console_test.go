@@ -2113,7 +2113,9 @@ func (s *consoleGeneratedImageStoreStub) ProcessGeneratedImage(_ context.Context
 	}, nil
 }
 
-func (*consoleGeneratedImageStoreStub) DeleteGeneratedImage(context.Context, string) error { return nil }
+func (*consoleGeneratedImageStoreStub) DeleteGeneratedImage(context.Context, string) error {
+	return nil
+}
 
 func (s *consoleImageAssetStoreStub) SaveImage(_ context.Context, data []byte) (mediadomain.Asset, error) {
 	s.mu.Lock()
