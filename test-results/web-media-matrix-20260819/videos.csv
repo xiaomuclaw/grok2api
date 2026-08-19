@@ -1,0 +1,23 @@
+﻿actual_duration_seconds,actual_height,actual_ratio_decimal,actual_ratio_reduced,actual_width,asset_id,codec,create_http_status,create_seconds,error_code,error_message,error_type,final_progress,final_status,job_id,kind,mime_type,model,requested_duration,requested_ratio,requested_resolution,sequential_retry_attempt,size_bytes,success
+,,,,,,,503,0.123,upstream_model_unavailable,Client Key 限定范围不支持该模型,server_error,,,,video,,grok-imagine-video,6,1:1,480p,,,False
+,,,,,,,200,0.12,generation_failed,"Post ""https://grok.com/rest/media/post/create"": read tcp 172.18.0.3:58542->172.17.0.1:17002: read: connection reset by peer",,1,failed,video_ty-wA14EJTfgnPtEOcVAVJwF,video,,grok-imagine-video,6,1:1,720p,3,,False
+,,,,,,,400,0.036,unsupported_model,视频编辑/延长仅支持路由到 Console grok-imagine-video: grok-imagine-video 不支持 1080p,invalid_request_error,,,,video,,grok-imagine-video,6,1:1,1080p,,,False
+,,,,,,,503,0.12,upstream_model_unavailable,Client Key 限定范围不支持该模型,server_error,,,,video,,grok-imagine-video,6,16:9,480p,,,False
+6.042,720,1.777778,16:9,1280,vid_bQxRVpwZ1j4MbPdocXV7g8zszZtb1WJE,avc1,200,0.082,,,,100,completed,video_SogxHJyQaANC3chwCdvJPEuq,video,video/mp4,grok-imagine-video,6,16:9,720p,2,1568664,True
+,,,,,,,400,0.043,unsupported_model,视频编辑/延长仅支持路由到 Console grok-imagine-video: grok-imagine-video 不支持 1080p,invalid_request_error,,,,video,,grok-imagine-video,6,16:9,1080p,,,False
+,,,,,,,503,0.021,upstream_model_unavailable,Client Key 限定范围不支持该模型,server_error,,,,video,,grok-imagine-video,6,9:16,480p,,,False
+6.042,1280,0.5625,9:16,720,vid_iK64MTHSkOiNppV_aWiplF-WIvagRic8,avc1,200,0.079,,,,100,completed,video_Lk0hdr49aBzVT9yL8idTEi0_,video,video/mp4,grok-imagine-video,6,9:16,720p,1,1524316,True
+,,,,,,,400,0.04,unsupported_model,视频编辑/延长仅支持路由到 Console grok-imagine-video: grok-imagine-video 不支持 1080p,invalid_request_error,,,,video,,grok-imagine-video,6,9:16,1080p,,,False
+,,,,,,,503,0.031,upstream_model_unavailable,Client Key 限定范围不支持该模型,server_error,,,,video,,grok-imagine-video,6,4:3,480p,,,False
+6.042,832,1.326923,69:52,1104,vid_uwqMJiROD_Y_IQmETMECABocNrWUBDv4,avc1,200,0.075,,,,100,completed,video_beBvTwR5eYYYc0hDAcBbykaa,video,video/mp4,grok-imagine-video,6,4:3,720p,1,1333563,True
+,,,,,,,400,0.03,unsupported_model,视频编辑/延长仅支持路由到 Console grok-imagine-video: grok-imagine-video 不支持 1080p,invalid_request_error,,,,video,,grok-imagine-video,6,4:3,1080p,,,False
+,,,,,,,503,0.064,upstream_model_unavailable,Client Key 限定范围不支持该模型,server_error,,,,video,,grok-imagine-video,6,3:4,480p,,,False
+6.042,1104,0.753623,52:69,832,vid_amFUiJGwIk8MM2ICFH-TLp3hjNNJi_0m,avc1,200,0.081,,,,100,completed,video_TxIR5mEA8nSyeHsDrj4T0Q1z,video,video/mp4,grok-imagine-video,6,3:4,720p,1,1154253,True
+,,,,,,,400,0.05,unsupported_model,视频编辑/延长仅支持路由到 Console grok-imagine-video: grok-imagine-video 不支持 1080p,invalid_request_error,,,,video,,grok-imagine-video,6,3:4,1080p,,,False
+,,,,,,,503,0.042,upstream_model_unavailable,Client Key 限定范围不支持该模型,server_error,,,,video,,grok-imagine-video,6,3:2,480p,,,False
+6.042,784,1.489796,73:49,1168,vid_MLSX9dG2XFwB7fRqfbtn22Q42wYy_Lqo,avc1,200,0.072,,,,100,completed,video_f0dp81Y0ADVb8LRAOOOyKo-0,video,video/mp4,grok-imagine-video,6,3:2,720p,2,1343471,True
+,,,,,,,400,0.028,unsupported_model,视频编辑/延长仅支持路由到 Console grok-imagine-video: grok-imagine-video 不支持 1080p,invalid_request_error,,,,video,,grok-imagine-video,6,3:2,1080p,,,False
+,,,,,,,503,0.032,upstream_model_unavailable,Client Key 限定范围不支持该模型,server_error,,,,video,,grok-imagine-video,6,2:3,480p,,,False
+,,,,,,,429,0.022,upstream_quota_exhausted,Client Key 限定范围中的可用账号额度等待恢复,rate_limit_error,,,,video,,grok-imagine-video,6,2:3,720p,3,,False
+,,,,,,,400,0.038,unsupported_model,视频编辑/延长仅支持路由到 Console grok-imagine-video: grok-imagine-video 不支持 1080p,invalid_request_error,,,,video,,grok-imagine-video,6,2:3,1080p,,,False
+,,,,,,,429,0.023,upstream_quota_exhausted,Client Key 限定范围中的可用账号额度等待恢复,rate_limit_error,,,,video,,grok-imagine-video,6,<omitted>,<omitted>,3,,False

@@ -1,0 +1,6 @@
+﻿error_code,error_message,error_type,http_status,name,path,request_seconds
+model_not_found,模型不存在,invalid_request_error,404,edit_model_on_generation_endpoint,/images/generations,0.014
+client_key_account_scope_unavailable,Client Key 限定范围当前没有可用上游账号,server_error,503,generation_model_on_edit_endpoint,/images/edits,0.014
+invalid_request,image 或 images 数量必须在 1 到 8 之间,invalid_request_error,400,edit_without_source_image,/images/edits,0.004
+,Grok Web 图片编辑当前仅支持 n=1,invalid_request_error,400,edit_requests_two_outputs,/images/edits,0.089
+,Grok Web 图片模型不支持 quality,invalid_request_error,400,edit_with_quality_parameter,/images/edits,0.03
