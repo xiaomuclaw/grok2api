@@ -33,3 +33,5 @@ backend/**/*_test.go
 !tools/egress-quality-guard/
 !tools/egress-quality-guard/quality_guard.py
 !tools/egress-quality-guard/session_rotator.py
+!tools/statsig-relay/
+!tools/statsig-relay/relay.py

@@ -1492,6 +1492,10 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 				_ = a.invalidateSignedStatsig(http.MethodPost, endpoint)
 				return response, nil
 			}
+			if isStatsigStaleMediaError(upstreamErr) && attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, endpoint) {
+				a.log().Warn("web_media_statsig_retry", "method", http.MethodPost, "path", request.URL.Path)
+				continue
+			}
 			// Structured JSON responses are application policy decisions. They
 			// must not invalidate Clearance, affect egress health, or be replayed.
 			if upstreamErr.bodyKind == "json" || attempt > 0 || !a.invalidateSignedStatsig(http.MethodPost, endpoint) {

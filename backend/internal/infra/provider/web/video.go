@@ -28,6 +28,7 @@ type webMediaUpstreamError struct {
 	bodyPrefixSHA256    string
 	bodyKind            string
 	cloudflareChallenge bool
+	statsigStale        bool
 }
 
 func (e *webMediaUpstreamError) Error() string {
@@ -53,6 +54,10 @@ func isClearanceRefreshableMediaError(e *webMediaUpstreamError) bool {
 		return false
 	}
 	return e.cloudflareChallenge || e.bodyKind == "empty" || e.bodyKind == "html"
+}
+
+func isStatsigStaleMediaError(e *webMediaUpstreamError) bool {
+	return e != nil && e.status == http.StatusForbidden && e.statsigStale
 }
 
 func (e *webMediaUpstreamError) providerResponse() *provider.Response {
@@ -91,6 +96,7 @@ var (
 // body metadata and a prefix hash, never the upstream response body itself.
 func newWebMediaUpstreamError(status int, body []byte, truncated bool) *webMediaUpstreamError {
 	digest := sha256.Sum256(body)
+	code, message, _ := extractWebMediaUpstreamErrorFields(body)
 	return &webMediaUpstreamError{
 		status:              status,
 		summary:             summarizeWebMediaUpstreamError(status, body, truncated),
@@ -99,6 +105,7 @@ func newWebMediaUpstreamError(status int, body []byte, truncated bool) *webMedia
 		bodyPrefixSHA256:    fmt.Sprintf("%x", digest),
 		bodyKind:            classifyWebMediaDiagnosticBody(body),
 		cloudflareChallenge: isCloudflareChallengeBody(body),
+		statsigStale:        code == "7" && strings.Contains(strings.ToLower(message), "page is out of date"),
 	}
 }
 

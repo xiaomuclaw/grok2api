@@ -21,6 +21,27 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # Private Statsig signer relay. It shares the Grok2API network and connects
+  # to the existing FlareSolverr container on the chatgpt2api network.
+  statsig-relay:
+    container_name: grok2api-statsig-relay
+    build:
+      context: .
+      dockerfile: tools/statsig-relay/Dockerfile
+    environment:
+      STATSIG_RELAY_BIND: 0.0.0.0
+      STATSIG_RELAY_PORT: 8788
+      STATSIG_RELAY_FLARESOLVERR_URL: http://chatgpt2api-flaresolverr:8191/v1
+      STATSIG_RELAY_UPSTREAM_URL: https://grok.wodf.de/sign
+    networks:
+      - default
+      - chatgpt2api_default
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
   # ================================ WARP ================================
   # 如果出口 IP 不干净，可取消以下注释使用 WARP 作为落地代理。
   # 启用后，在管理端“设置 -> 出口代理”中新增 socks5://warp:1080。
@@ -76,3 +97,7 @@ services:
 volumes:
   grok2api-data:
   quality_guard_state:
+
+networks:
+  chatgpt2api_default:
+    external: true

@@ -24,7 +24,7 @@ import (
 
 const (
 	defaultStatsigSignerURL = "https://grok.wodf.de/sign"
-	statsigCacheTTL         = time.Hour
+	statsigCacheTTL         = 90 * time.Second
 	statsigCacheMaxEntries  = 4096
 	statsigMetaBodyLimit    = 4 << 20
 	statsigResponseLimit    = 4 << 10
