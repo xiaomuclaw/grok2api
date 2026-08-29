@@ -642,6 +642,8 @@ func TestImageGenerationEndpointValidatesXAIContractBeforeRouting(t *testing.T) 
 		{name: "large n", body: `{"model":"grok-imagine-image","prompt":"test","n":11}`, want: "n 必须在 1 到 10 之间"},
 		{name: "invalid quality", body: `{"model":"grok-imagine-image-2.0","prompt":"test","quality":"high"}`, want: "quality 必须是 low 或 medium"},
 		{name: "storage options", body: `{"model":"grok-imagine-image","prompt":"test","storage_options":{"filename":"test.jpg"}}`, want: "不支持 storage_options"},
+		{name: "2k stream", body: `{"model":"grok-imagine-image","prompt":"test","resolution":"2k","stream":true}`, want: "2K/4K 图片请求不支持 stream=true"},
+		{name: "4k stream", body: `{"model":"grok-imagine-image","prompt":"test","resolution":"4k","stream":true}`, want: "2K/4K 图片请求不支持 stream=true"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(test.body))
@@ -697,6 +699,19 @@ func TestImageEditAcceptsOfficialJSONShape(t *testing.T) {
 	router.ServeHTTP(invalidResolutionRecorder, invalidResolution)
 	if invalidResolutionRecorder.Code != http.StatusBadRequest || !strings.Contains(invalidResolutionRecorder.Body.String(), "resolution 必须是 1k、2k 或 4k") {
 		t.Fatalf("invalid resolution status=%d body=%s", invalidResolutionRecorder.Code, invalidResolutionRecorder.Body.String())
+	}
+
+	for _, resolution := range []string{"2k", "4k"} {
+		highResolutionStream := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{
+			"model":"grok-imagine-image-edit","prompt":"test","resolution":"`+resolution+`","stream":true,
+			"image":{"url":"https://example.com/input.png"}
+		}`))
+		highResolutionStream.Header.Set("Content-Type", "application/json")
+		highResolutionStreamRecorder := httptest.NewRecorder()
+		router.ServeHTTP(highResolutionStreamRecorder, highResolutionStream)
+		if highResolutionStreamRecorder.Code != http.StatusBadRequest || !strings.Contains(highResolutionStreamRecorder.Body.String(), "2K/4K 图片请求不支持 stream=true") {
+			t.Fatalf("%s stream status=%d body=%s", resolution, highResolutionStreamRecorder.Code, highResolutionStreamRecorder.Body.String())
+		}
 	}
 
 	invalidQuality := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{

@@ -68,14 +68,20 @@ type imageOutputPlan struct {
 
 func planImageOutput(providerValue accountdomain.Provider, operation audit.Operation, requestedResolution string) imageOutputPlan {
 	requestedResolution = strings.ToLower(strings.TrimSpace(requestedResolution))
-	if requestedResolution != "4k" {
+	targetMaxEdge := 0
+	switch requestedResolution {
+	case "2k":
+		targetMaxEdge = 2048
+	case "4k":
+		targetMaxEdge = 4096
+	default:
 		return imageOutputPlan{upstreamResolution: requestedResolution}
 	}
 	upstreamResolution := "2k"
 	if providerValue == accountdomain.ProviderWeb && operation == audit.OperationImageEdit {
 		upstreamResolution = "1k"
 	}
-	return imageOutputPlan{upstreamResolution: upstreamResolution, targetMaxEdge: 4096}
+	return imageOutputPlan{upstreamResolution: upstreamResolution, targetMaxEdge: targetMaxEdge}
 }
 
 // GenerateImage 选择支持图片生成的路由和账号，并返回可统一审计的上游响应。
@@ -154,6 +160,9 @@ func (s *Service) executeImage(
 		preselectedSession = nil
 	}
 	outputPlan := planImageOutput(route.Provider, operation, resolution)
+	if outputPlan.targetMaxEdge > 0 && streaming {
+		return nil, ErrImageUpscaleStreaming
+	}
 	if outputPlan.targetMaxEdge > 0 && !s.imageUpscaleEnabled.Load() {
 		return nil, ErrImageUpscaleDisabled
 	}

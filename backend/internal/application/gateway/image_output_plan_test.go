@@ -20,7 +20,11 @@ func TestPlanImageOutput(t *testing.T) {
 		{name: "console edit 4k", provider: account.ProviderConsole, operation: audit.OperationImageEdit, requested: "4K", resolution: "2k", target: 4096},
 		{name: "web generation 4k", provider: account.ProviderWeb, operation: audit.OperationImage, requested: "4k", resolution: "2k", target: 4096},
 		{name: "web edit 4k", provider: account.ProviderWeb, operation: audit.OperationImageEdit, requested: "4k", resolution: "1k", target: 4096},
-		{name: "2k unchanged", provider: account.ProviderConsole, operation: audit.OperationImage, requested: "2k", resolution: "2k"},
+		{name: "console generation 2k", provider: account.ProviderConsole, operation: audit.OperationImage, requested: "2k", resolution: "2k", target: 2048},
+		{name: "console edit 2k", provider: account.ProviderConsole, operation: audit.OperationImageEdit, requested: "2K", resolution: "2k", target: 2048},
+		{name: "web generation 2k", provider: account.ProviderWeb, operation: audit.OperationImage, requested: "2k", resolution: "2k", target: 2048},
+		{name: "web edit 2k", provider: account.ProviderWeb, operation: audit.OperationImageEdit, requested: "2k", resolution: "1k", target: 2048},
+		{name: "1k unchanged", provider: account.ProviderConsole, operation: audit.OperationImage, requested: "1k", resolution: "1k"},
 		{name: "empty unchanged", provider: account.ProviderWeb, operation: audit.OperationImage, requested: "", resolution: ""},
 	}
 	for _, test := range tests {

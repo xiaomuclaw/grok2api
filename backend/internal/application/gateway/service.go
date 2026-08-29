@@ -48,7 +48,8 @@ var (
 	ErrVideoParameterInvalid      = errors.New("视频请求参数无效")
 	ErrVideoOperationUnsupported  = errors.New("视频编辑/延长仅支持路由到 Console grok-imagine-video")
 	ErrLedgerUnavailable          = errors.New("计费账本暂不可用")
-	ErrImageUpscaleDisabled       = errors.New("自动 4K 图片放大未启用")
+	ErrImageUpscaleDisabled       = errors.New("自动 2K/4K 图片放大未启用")
+	ErrImageUpscaleStreaming      = errors.New("2K/4K 图片请求不支持 stream=true")
 )
 
 const responseOwnershipTTL = 30 * 24 * time.Hour

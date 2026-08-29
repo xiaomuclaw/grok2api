@@ -2372,18 +2372,18 @@ Object.assign(resources.en.translation.settings.web as unknown as Record<string,
   clearanceOnDemand: "On demand",
 });
 Object.assign(resources["zh-CN"].translation.settings.media as unknown as Record<string, string>, {
-  imageUpscaleEnabled: "自动 4K 图片放大",
-  imageUpscaleEnabledHelp: "开启后，Console 和 Web 的 4K 图片请求会在交付前按原比例插值放大到长边 4096；1K 和 2K 不受影响。",
+  imageUpscaleEnabled: "自动 2K/4K 图片放大",
+  imageUpscaleEnabledHelp: "开启后，Console 和 Web 的 2K/4K 图片请求会在交付前按原比例处理到长边 2048/4096；1K 不受影响。",
 });
 Object.assign(resources.en.translation.settings.media as unknown as Record<string, string>, {
-  imageUpscaleEnabled: "Automatic 4K image upscale",
-  imageUpscaleEnabledHelp: "When enabled, 4K requests from Console and Web are proportionally upscaled to a 4096-pixel long edge before delivery; 1K and 2K are unchanged.",
+  imageUpscaleEnabled: "Automatic 2K/4K image upscale",
+  imageUpscaleEnabledHelp: "When enabled, 2K and 4K requests from Console and Web are proportionally processed to a 2048 or 4096-pixel long edge before delivery; 1K is unchanged.",
 });
 Object.assign(resources["zh-CN"].translation.docs.reference as unknown as Record<string, string>, {
-  fieldImageResolution: "图片支持 1k/2k/4k；4k 会请求兼容的上游分辨率，并在交付前按原比例放大到长边 4096。Web 图片生成仍由模型名称选择上游产品。",
+  fieldImageResolution: "图片支持 1k/2k/4k；2k/4k 会请求兼容的上游分辨率，并在交付前按原比例处理到长边 2048/4096。Web 图片生成仍由模型名称选择上游产品。",
 });
 Object.assign(resources.en.translation.docs.reference as unknown as Record<string, string>, {
-  fieldImageResolution: "Images support 1k, 2k, and 4k. A 4k request uses a compatible upstream resolution and is proportionally upscaled to a 4096-pixel long edge before delivery. Web image generation still selects the upstream product by model name.",
+  fieldImageResolution: "Images support 1k, 2k, and 4k. A 2k or 4k request uses a compatible upstream resolution and is proportionally processed to a 2048 or 4096-pixel long edge before delivery. Web image generation still selects the upstream product by model name.",
 });
 function readStoredLanguage(): string | null {
   if (typeof window === "undefined") return null;

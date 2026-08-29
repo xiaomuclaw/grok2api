@@ -15,7 +15,7 @@ func DeliverGeneratedImage(ctx context.Context, store ImageAssetStore, data []by
 	if targetMaxEdge > 0 {
 		generatedStore, ok := store.(GeneratedImageStore)
 		if !ok {
-			return ProcessedImage{}, fmt.Errorf("图片媒体存储不支持 4K 后处理")
+			return ProcessedImage{}, fmt.Errorf("图片媒体存储不支持 2K/4K 后处理")
 		}
 		return generatedStore.ProcessGeneratedImage(ctx, data, targetMaxEdge)
 	}

@@ -270,7 +270,7 @@ func TestLoadPersistedKeepsImageUpscaleEnabledForOlderPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !loaded.Media.ImageUpscaleEnabled {
-		t.Fatal("older persisted payload disabled automatic 4K upscaling")
+		t.Fatal("older persisted payload disabled automatic 2K/4K upscaling")
 	}
 }
 
@@ -287,7 +287,7 @@ func TestLoadPersistedPreservesExplicitlyDisabledImageUpscale(t *testing.T) {
 		t.Fatal(err)
 	}
 	if loaded.Media.ImageUpscaleEnabled {
-		t.Fatal("explicitly disabled automatic 4K upscaling was ignored")
+		t.Fatal("explicitly disabled automatic 2K/4K upscaling was ignored")
 	}
 }
 

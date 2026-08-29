@@ -77,6 +77,16 @@ func TestProcessDoesNotReencodeImageAlreadyAtTarget(t *testing.T) {
 	}
 }
 
+func TestProcessScalesTo2KLongEdge(t *testing.T) {
+	result, err := Process(context.Background(), encodePNG(t, 100, 50, false), 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Width != 2048 || result.Height != 1024 || !result.Upscaled {
+		t.Fatalf("2K result = %+v", result)
+	}
+}
+
 func encodePNG(t *testing.T, width, height int, transparent bool) []byte {
 	t.Helper()
 	value := image.NewNRGBA(image.Rect(0, 0, width, height))

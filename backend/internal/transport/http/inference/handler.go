@@ -415,8 +415,8 @@ func (h *Handler) generateImage(c *gin.Context) {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "resolution 必须是 1k、2k 或 4k")
 		return
 	}
-	if resolution == "4k" && request.Stream {
-		writeImageGenerationUserError(c, "unsupported_parameter", "stream", "4K 图片请求不支持 stream=true")
+	if (resolution == "2k" || resolution == "4k") && request.Stream {
+		writeImageGenerationUserError(c, "unsupported_parameter", "stream", "2K/4K 图片请求不支持 stream=true")
 		return
 	}
 	if request.Stream && count != 1 {
@@ -674,8 +674,8 @@ func (h *Handler) editImage(c *gin.Context) {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "resolution 必须是 1k、2k 或 4k")
 		return
 	}
-	if resolution == "4k" && request.Stream {
-		writeImageGenerationUserError(c, "unsupported_parameter", "stream", "4K 图片请求不支持 stream=true")
+	if (resolution == "2k" || resolution == "4k") && request.Stream {
+		writeImageGenerationUserError(c, "unsupported_parameter", "stream", "2K/4K 图片请求不支持 stream=true")
 		return
 	}
 	quality := strings.ToLower(strings.TrimSpace(request.Quality))
@@ -2271,6 +2271,9 @@ func writeGatewayError(c *gin.Context, err error) {
 		message = err.Error()
 	case errors.Is(err, gateway.ErrImageUpscaleDisabled):
 		status, code = http.StatusBadRequest, "image_upscale_disabled"
+		message = err.Error()
+	case errors.Is(err, gateway.ErrImageUpscaleStreaming):
+		status, code = http.StatusBadRequest, "unsupported_parameter"
 		message = err.Error()
 	case errors.Is(err, gateway.ErrVideoInputTooLarge), errors.Is(err, gateway.ErrVideoInputUnavailable), errors.Is(err, gateway.ErrVideoParameterInvalid):
 		status, code = http.StatusBadRequest, "invalid_request"
