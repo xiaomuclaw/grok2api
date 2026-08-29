@@ -84,6 +84,11 @@ func (s *Selector) beginSelectionSessionForKey(ctx context.Context, provider acc
 			earliestRetry = earlierFuture(earliestRetry, candidate.ModelQuotaBlock.CooldownUntil, now)
 			continue
 		}
+		if candidateEgressLeaseCooling(candidate, value, now) {
+			coolingCandidates++
+			earliestRetry = earlierFuture(earliestRetry, candidate.EgressLeaseBlock.CooldownUntil, now)
+			continue
+		}
 		if value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
 			coolingCandidates++
 			earliestRetry = earlierFuture(earliestRetry, *value.CooldownUntil, now)
@@ -354,6 +359,27 @@ func (session *selectionSession) hasUnexcludedNormal(excluded map[uint64]bool) b
 	for _, index := range session.normalCandidates {
 		if !session.candidateExcluded(excluded, session.values[index].Credential.ID) {
 			return true
+		}
+	}
+	return false
+}
+
+// hasAvailableCandidate reports whether this request-level snapshot still has
+// an account the quality retry is allowed to switch to. This is deliberately
+// stronger than checking the routing attempt counter: a large attempt budget
+// does not imply that another account exists.
+func (session *selectionSession) hasAvailableCandidate(excluded map[uint64]bool, allowQuotaProbe bool) bool {
+	if session == nil {
+		return false
+	}
+	if session.hasUnexcludedNormal(excluded) {
+		return true
+	}
+	if allowQuotaProbe {
+		for _, index := range session.probeCandidates {
+			if !session.candidateExcluded(excluded, session.values[index].Credential.ID) {
+				return true
+			}
 		}
 	}
 	return false

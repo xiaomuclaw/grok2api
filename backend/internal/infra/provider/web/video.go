@@ -16,7 +16,6 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
-	"github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
@@ -28,7 +27,6 @@ type webMediaUpstreamError struct {
 	bodyPrefixSHA256    string
 	bodyKind            string
 	cloudflareChallenge bool
-	statsigStale        bool
 }
 
 func (e *webMediaUpstreamError) Error() string {
@@ -56,8 +54,21 @@ func isClearanceRefreshableMediaError(e *webMediaUpstreamError) bool {
 	return e.cloudflareChallenge || e.bodyKind == "empty" || e.bodyKind == "html"
 }
 
-func isStatsigStaleMediaError(e *webMediaUpstreamError) bool {
-	return e != nil && e.status == http.StatusForbidden && e.statsigStale
+// isStatsigRefreshableMediaError identifies application-layer rejections that
+// tell the browser to reload its page state. Grok uses code 7 for this anti-bot
+// response, but the same code can also wrap a definitive account block; blocked
+// credentials must remain terminal and must not be replayed with a fresh signature.
+func isStatsigRefreshableMediaError(e *webMediaUpstreamError, body []byte) bool {
+	if e == nil || e.status != http.StatusForbidden || e.bodyKind != "json" || provider.IsDefinitiveAccountBlockBody(body) {
+		return false
+	}
+	code, message, structured := extractWebMediaUpstreamErrorFields(body)
+	if !structured {
+		return false
+	}
+	normalized := strings.ToLower(message)
+	return code == "7" || strings.Contains(normalized, "anti-bot") ||
+		strings.Contains(normalized, "page is out of date") || strings.Contains(normalized, "reload to continue")
 }
 
 func (e *webMediaUpstreamError) providerResponse() *provider.Response {
@@ -96,7 +107,6 @@ var (
 // body metadata and a prefix hash, never the upstream response body itself.
 func newWebMediaUpstreamError(status int, body []byte, truncated bool) *webMediaUpstreamError {
 	digest := sha256.Sum256(body)
-	code, message, _ := extractWebMediaUpstreamErrorFields(body)
 	return &webMediaUpstreamError{
 		status:              status,
 		summary:             summarizeWebMediaUpstreamError(status, body, truncated),
@@ -105,7 +115,6 @@ func newWebMediaUpstreamError(status int, body []byte, truncated bool) *webMedia
 		bodyPrefixSHA256:    fmt.Sprintf("%x", digest),
 		bodyKind:            classifyWebMediaDiagnosticBody(body),
 		cloudflareChallenge: isCloudflareChallengeBody(body),
-		statsigStale:        code == "7" && strings.Contains(strings.ToLower(message), "page is out of date"),
 	}
 }
 
@@ -241,6 +250,9 @@ func boundWebMediaDiagnostic(value string, limit int) string {
 }
 
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
+	if strings.TrimSpace(request.ImageURL) != "" || len(request.ReferenceURLs) > 0 {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Grok Web 当前仅支持文本生视频；图片视频请使用 Build 或 Console Provider"))
+	}
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
 	if err != nil {
@@ -251,32 +263,6 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
 	}
 	defer lease.Release()
-	parentID := ""
-	rawReferences := make([]string, 0, 1+len(request.ReferenceURLs))
-	if imageURL := strings.TrimSpace(request.ImageURL); imageURL != "" {
-		rawReferences = append(rawReferences, imageURL)
-	}
-	for _, rawReference := range request.ReferenceURLs {
-		if value := strings.TrimSpace(rawReference); value != "" {
-			rawReferences = append(rawReferences, value)
-		}
-	}
-	references := make([]string, 0, len(rawReferences))
-	for _, rawReference := range rawReferences {
-		reference, referenceErr := a.prepareVideoReference(ctx, cfg, lease, token, rawReference)
-		if referenceErr != nil {
-			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(referenceErr), 0, referenceErr)
-		}
-		references = append(references, reference)
-	}
-	if len(references) > 0 {
-		parentID, err = a.createMediaPost(ctx, cfg, lease, token, "MEDIA_POST_TYPE_IMAGE", references[0], "", "video_reference_media_post")
-	} else {
-		parentID, err = a.createMediaPost(ctx, cfg, lease, token, "MEDIA_POST_TYPE_VIDEO", "", request.Prompt, "video_prompt_media_post")
-	}
-	if err != nil {
-		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
-	}
 	segments := videoSegments(request.Duration)
 	if len(segments) == 0 {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("duration 必须在 1 到 15 秒之间"))
@@ -286,7 +272,7 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if resolution == "" {
 		resolution = "720p"
 	}
-	payload := videoCreatePayload(request.Prompt, parentID, ratio, resolution, segments[0], references)
+	payload := videoCreatePayload(request.Prompt, ratio, resolution, segments[0])
 	response, err := a.postJSON(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.VideoTimeoutSeconds)*time.Second)
 	if err != nil {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
@@ -307,25 +293,6 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePoll, 0, fmt.Errorf("视频生成完成但没有返回内容 URL"))
 	}
 	return result, nil
-}
-
-func (a *Adapter) prepareVideoReference(ctx context.Context, cfg Config, lease *egress.Lease, token, value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", fmt.Errorf("视频参考图片 URL 不能为空")
-	}
-	image, err := a.loadChatImage(ctx, lease, value, 20<<20)
-	if err != nil {
-		return "", err
-	}
-	uploaded, err := a.uploadFileV2Direct(ctx, cfg, lease, token, image, cfg.BaseURL+"/imagine", imagineSelfUploadSource, "video_reference_upload")
-	if err != nil {
-		return "", err
-	}
-	if uploaded.URI == "" {
-		return "", fmt.Errorf("上传视频参考图片后未返回 fileUri")
-	}
-	return uploaded.URI, nil
 }
 
 // DownloadVideo retrieves a completed Grok asset through its source SSO
@@ -549,15 +516,31 @@ func videoSegments(seconds int) []int {
 	return []int{seconds}
 }
 
-func videoCreatePayload(prompt, parentID, ratio, resolution string, seconds int, references []string) map[string]any {
-	config := map[string]any{"parentPostId": parentID, "aspectRatio": ratio, "videoLength": seconds, "resolutionName": resolution}
-	if len(references) > 0 {
-		config["isVideoEdit"] = false
-		config["isReferenceToVideo"] = true
-		config["imageReferences"] = references
-	}
+// videoCreatePayload mirrors the current Grok Imagine browser request.
+// In particular, the generation parameters belong in mediaGenInput rather
+// than the legacy modelConfigOverride map. Keeping this shape explicit also
+// prevents text-to-video from depending on a synthetic media post.
+func videoCreatePayload(prompt, ratio, resolution string, seconds int) map[string]any {
 	return map[string]any{
-		"temporary": true, "modelName": "imagine-video-gen", "message": prompt + " --mode=custom", "enableSideBySide": true,
-		"responseMetadata": map[string]any{"experiments": []any{}, "modelConfigOverride": map[string]any{"modelMap": map[string]any{"videoGenModelConfig": config}}},
+		"modelName":            "imagine-video-gen",
+		"message":              prompt + " --mode=custom",
+		"enableImageStreaming": true,
+		"enableSideBySide":     true,
+		"sendFinalMetadata":    true,
+		"responseMetadata": map[string]any{
+			"experiments": []any{},
+			"modelConfigOverride": map[string]any{
+				"modelMap": map[string]any{},
+			},
+		},
+		"mediaGenInput": map[string]any{
+			"textToVideo": map[string]any{
+				"prompt":         prompt,
+				"aspectRatio":    ratio,
+				"duration":       seconds,
+				"resolutionName": resolution,
+			},
+		},
+		"kind": "CONVERSATION_KIND_IMAGINE",
 	}
 }

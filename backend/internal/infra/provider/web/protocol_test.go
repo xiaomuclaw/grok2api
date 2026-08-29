@@ -100,24 +100,6 @@ func TestWebImagePublicNamesMatchProtocolProducts(t *testing.T) {
 	}
 }
 
-func TestParseMediaPostResponsePreservesStatusAndPostID(t *testing.T) {
-	postID, err := parseMediaPostResponse(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(`{"post":{"id":"post_1","videos":[{"id":"post_1"}]}}`)),
-	})
-	if err != nil || postID != "post_1" {
-		t.Fatalf("postID=%q err=%v", postID, err)
-	}
-	_, err = parseMediaPostResponse(&http.Response{
-		StatusCode: http.StatusForbidden,
-		Body:       io.NopCloser(strings.NewReader(`{"error":"challenge"}`)),
-	})
-	var upstreamErr *webMediaUpstreamError
-	if !errors.As(err, &upstreamErr) || upstreamErr.status != http.StatusForbidden || !strings.Contains(err.Error(), "challenge") {
-		t.Fatalf("error = %#v", err)
-	}
-}
-
 func TestWebChatPricingUsesGrok45(t *testing.T) {
 	registry := provider.NewRegistry(&Adapter{})
 	for _, upstreamModel := range []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy"} {
@@ -1091,58 +1073,6 @@ func TestBuildDirectFileUploadBodyOmitsSourceForChat(t *testing.T) {
 	}
 }
 
-func TestVideoReferenceUsesV2DirectUpload(t *testing.T) {
-	dataURI := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/http/upload-file-v2/direct" {
-			t.Errorf("unexpected upload path %q", request.URL.Path)
-			writer.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if err := request.ParseMultipartForm(2 << 20); err != nil {
-			t.Errorf("multipart: %v", err)
-			writer.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		file, header, err := request.FormFile("file")
-		if err != nil {
-			t.Errorf("file part: %v", err)
-			writer.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		defer file.Close()
-		content, _ := io.ReadAll(file)
-		if header.Filename != "image.png" || header.Header.Get("Content-Type") != "image/png" || len(content) == 0 {
-			t.Errorf("upload filename=%q content-type=%q bytes=%d", header.Filename, header.Header.Get("Content-Type"), len(content))
-		}
-		if request.FormValue("file_source") != imagineSelfUploadSource {
-			t.Errorf("file_source = %q", request.FormValue("file_source"))
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(writer, `{"uploadId":"upload-1","fileMetadata":{"fileMetadataId":"metadata-1","fileUri":"users/test/reference/content"}}`)
-	}))
-	defer server.Close()
-
-	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager := infraegress.NewManager(egressRepositoryStub{}, cipher)
-	lease, err := manager.Acquire(context.Background(), egressdomain.ScopeWeb, "video-reference-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lease.Release()
-	adapter := NewAdapter(Config{BaseURL: server.URL}, manager, cipher, nil, nil)
-	uri, err := adapter.prepareVideoReference(context.Background(), adapter.config(), lease, "test-sso", dataURI)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uri != "https://assets.grok.com/users/test/reference/content" {
-		t.Fatalf("uri = %q", uri)
-	}
-}
-
 func TestDecodeDirectFileUploadResponse(t *testing.T) {
 	uploaded, err := decodeDirectFileUploadResponse(strings.NewReader(`{
 		"uploadId":"upload-1",
@@ -1658,6 +1588,141 @@ func TestParseVideoStreamFixture(t *testing.T) {
 	}
 }
 
+func TestTextToVideoPayloadMatchesCapturedMediaGenInputShape(t *testing.T) {
+	payload := videoCreatePayload("雨后天晴！", "9:16", "480p", 6)
+	if len(payload) != 8 || payload["modelName"] != "imagine-video-gen" ||
+		payload["message"] != "雨后天晴！ --mode=custom" ||
+		payload["enableImageStreaming"] != true || payload["enableSideBySide"] != true ||
+		payload["sendFinalMetadata"] != true || payload["kind"] != "CONVERSATION_KIND_IMAGINE" {
+		t.Fatalf("payload = %#v", payload)
+	}
+
+	metadata, ok := payload["responseMetadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("responseMetadata = %#v", payload["responseMetadata"])
+	}
+	if experiments, ok := metadata["experiments"].([]any); !ok || len(experiments) != 0 {
+		t.Fatalf("experiments = %#v", metadata["experiments"])
+	}
+	override, ok := metadata["modelConfigOverride"].(map[string]any)
+	if !ok {
+		t.Fatalf("modelConfigOverride = %#v", metadata["modelConfigOverride"])
+	}
+	modelMap, ok := override["modelMap"].(map[string]any)
+	if !ok || len(modelMap) != 0 {
+		t.Fatalf("modelMap = %#v", override["modelMap"])
+	}
+
+	mediaGenInput, ok := payload["mediaGenInput"].(map[string]any)
+	if !ok {
+		t.Fatalf("mediaGenInput = %#v", payload["mediaGenInput"])
+	}
+	textToVideo, ok := mediaGenInput["textToVideo"].(map[string]any)
+	if !ok || textToVideo["prompt"] != "雨后天晴！" || textToVideo["aspectRatio"] != "9:16" ||
+		textToVideo["duration"] != 6 || textToVideo["resolutionName"] != "480p" {
+		t.Fatalf("textToVideo = %#v", mediaGenInput["textToVideo"])
+	}
+
+	for _, field := range []string{"temporary", "videoGenModelConfig", "parentPostId"} {
+		if _, exists := payload[field]; exists {
+			t.Fatalf("legacy field %q leaked into text-to-video payload: %#v", field, payload)
+		}
+	}
+}
+
+func TestGenerateVideoRefreshesOnlyReloadStatsigForbidden(t *testing.T) {
+	tests := []struct {
+		name             string
+		forbiddenBody    string
+		wantRequestCalls int
+		wantSuccess      bool
+	}{
+		{
+			name:             "page out of date",
+			forbiddenBody:    `{"code":7,"message":"This page is out of date. Reload to continue.","details":[]}`,
+			wantRequestCalls: 2,
+			wantSuccess:      true,
+		},
+		{
+			name:             "content moderation",
+			forbiddenBody:    `{"error":{"code":"content-moderated","message":"rejected"}}`,
+			wantRequestCalls: 1,
+		},
+		{
+			name:             "definitive account block",
+			forbiddenBody:    `{"code":7,"message":"User is blocked [WKE=unauthorized:blocked-user]","details":[]}`,
+			wantRequestCalls: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			requestCalls := 0
+			signerCalls := 0
+			signatures := make([]string, 0, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/sign":
+					signerCalls++
+					value := base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{byte('a' + signerCalls)}, 70))
+					writer.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(writer).Encode(map[string]string{"x-statsig-id": value})
+				case "/rest/app-chat/conversations/new":
+					requestCalls++
+					signatures = append(signatures, request.Header.Get("x-statsig-id"))
+					if requestCalls == 1 {
+						writer.Header().Set("Content-Type", "application/json")
+						writer.WriteHeader(http.StatusForbidden)
+						_, _ = io.WriteString(writer, test.forbiddenBody)
+						return
+					}
+					writer.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(writer, `data: {"result":{"response":{"streamingVideoGenerationResponse":{"progress":100,"videoPostId":"post_1","videoUrl":"/videos/final.mp4"}}}}`+"\n\n")
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer server.Close()
+
+			cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			encryptedToken, err := cipher.Encrypt("test-sso")
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter := NewAdapter(Config{
+				BaseURL: server.URL, StatsigMode: "url", StatsigSignerURL: server.URL + "/sign", VideoTimeoutSeconds: 5,
+			}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+			adapter.statsig.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+				return "current-page-meta", nil
+			}
+			adapter.statsig.validateEndpoint = func(context.Context, string) error { return nil }
+
+			result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+				Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encryptedToken},
+				Prompt:     "test", Duration: 5,
+			})
+			if test.wantSuccess {
+				if err != nil || result.URL != "https://assets.grok.com/videos/final.mp4" {
+					t.Fatalf("result=%#v err=%v", result, err)
+				}
+			} else if err == nil {
+				t.Fatal("structured policy rejection unexpectedly succeeded")
+			}
+			if requestCalls != test.wantRequestCalls || signerCalls != test.wantRequestCalls {
+				t.Fatalf("request calls=%d signer calls=%d, want %d", requestCalls, signerCalls, test.wantRequestCalls)
+			}
+			if len(signatures) != test.wantRequestCalls || signatures[0] == "" {
+				t.Fatalf("signatures = %#v", signatures)
+			}
+			if test.wantRequestCalls == 2 && signatures[0] == signatures[1] {
+				t.Fatalf("rejected Statsig signature was reused: %#v", signatures)
+			}
+		})
+	}
+}
+
 func TestParseVideoStreamPreservesUpstreamStatus(t *testing.T) {
 	response := &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader("limited"))}
 	_, _, err := parseVideoStream(response, nil)
@@ -1673,8 +1738,17 @@ func TestGenerateVideoClassifiesOnlyExplicitHTTPRejectionAsCreateFailure(t *test
 		writer.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/rest/media/post/create":
-			_, _ = io.WriteString(writer, `{"post":{"id":"post_1"}}`)
+			t.Error("text-to-video unexpectedly used the retired media-post endpoint")
+			writer.WriteHeader(http.StatusInternalServerError)
 		case "/rest/app-chat/conversations/new":
+			var payload map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Errorf("decode video payload: %v", err)
+			}
+			mediaGenInput, _ := payload["mediaGenInput"].(map[string]any)
+			if _, ok := mediaGenInput["textToVideo"].(map[string]any); !ok {
+				t.Errorf("textToVideo payload = %#v", payload)
+			}
 			writer.WriteHeader(status)
 			if status == http.StatusOK {
 				_, _ = io.WriteString(writer, `{}`)
