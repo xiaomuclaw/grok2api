@@ -1448,7 +1448,7 @@ func (s *Service) importCredentialDocumentsWithProgress(ctx context.Context, ada
 	}
 	var result ImportResult
 	var err error
-	if preparer, ok := adapter.(provider.CredentialImportPreparer); ok && hasRefreshTokenOnlySeed(seeds) {
+	if preparer, ok := adapter.(provider.CredentialImportPreparer); ok && hasSeedRequiringImportPreparation(seeds, s.now()) {
 		result, err = s.persistPreparedImportedSeeds(ctx, seeds, preparer, observer, progress)
 	} else {
 		result, err = s.persistImportedSeeds(ctx, seeds, observer, progress)
@@ -1457,13 +1457,23 @@ func (s *Service) importCredentialDocumentsWithProgress(ctx context.Context, ada
 	return result, err
 }
 
-func hasRefreshTokenOnlySeed(seeds []provider.CredentialSeed) bool {
+func hasSeedRequiringImportPreparation(seeds []provider.CredentialSeed, now time.Time) bool {
 	for _, seed := range seeds {
-		if strings.TrimSpace(seed.AccessToken) == "" && strings.TrimSpace(seed.RefreshToken) != "" {
+		if importedSeedRequiresPreparation(seed, now) {
 			return true
 		}
 	}
 	return false
+}
+
+func importedSeedRequiresPreparation(seed provider.CredentialSeed, now time.Time) bool {
+	if strings.TrimSpace(seed.RefreshToken) == "" {
+		return false
+	}
+	if strings.TrimSpace(seed.AccessToken) == "" {
+		return true
+	}
+	return !seed.ExpiresAt.IsZero() && !seed.ExpiresAt.After(now)
 }
 
 func (s *Service) persistPreparedImportedSeeds(ctx context.Context, seeds []provider.CredentialSeed, preparer provider.CredentialImportPreparer, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
@@ -1483,7 +1493,7 @@ func (s *Service) persistPreparedImportedSeeds(ctx context.Context, seeds []prov
 		seen      = make(map[string]struct{}, len(seeds))
 	)
 	_, batchErr := batch.ForEachObserved(prepareCtx, seeds, batch.Options{Workers: credentialImportPrepareWorkers}, func(itemCtx context.Context, seed provider.CredentialSeed) (provider.CredentialSeed, error) {
-		if strings.TrimSpace(seed.AccessToken) == "" && strings.TrimSpace(seed.RefreshToken) != "" {
+		if importedSeedRequiresPreparation(seed, s.now()) {
 			return preparer.PrepareImportedCredential(itemCtx, seed)
 		}
 		return seed, nil

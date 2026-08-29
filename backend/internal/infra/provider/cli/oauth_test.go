@@ -67,6 +67,48 @@ func TestPrepareImportedCredentialRefreshesRTOnlySeed(t *testing.T) {
 	}
 }
 
+func TestPrepareImportedCredentialRefreshesExpiredAccessToken(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := 0
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		if request.FormValue("refresh_token") != "original-rt" {
+			t.Fatalf("refresh token was not submitted")
+		}
+		return oauthResponse(http.StatusOK, `{"access_token":"fresh-access","refresh_token":"rotated-rt","expires_in":3600}`), nil
+	})}
+	adapter := &Adapter{oauth: newOAuthClient(httpClient, nil), cipher: cipher}
+	prepared, err := adapter.PrepareImportedCredential(context.Background(), provider.CredentialSeed{
+		AccessToken: "expired-access", RefreshToken: "original-rt", ExpiresAt: time.Now().UTC().Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || prepared.AccessToken != "fresh-access" || prepared.RefreshToken != "rotated-rt" {
+		t.Fatalf("prepared seed = %#v, requests = %d", prepared, requests)
+	}
+}
+
+func TestPrepareImportedCredentialKeepsUnexpiredAccessToken(t *testing.T) {
+	requests := 0
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		return oauthResponse(http.StatusInternalServerError, `{}`), nil
+	})}
+	adapter := &Adapter{oauth: newOAuthClient(httpClient, nil)}
+	seed := provider.CredentialSeed{AccessToken: "valid-access", RefreshToken: "original-rt", ExpiresAt: time.Now().UTC().Add(time.Hour)}
+	prepared, err := adapter.PrepareImportedCredential(context.Background(), seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 0 || prepared.AccessToken != seed.AccessToken || prepared.RefreshToken != seed.RefreshToken {
+		t.Fatalf("prepared seed = %#v, requests = %d", prepared, requests)
+	}
+}
+
 func TestCredentialRefreshCallsOAuthAndPersistsRotationEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	requests := 0
