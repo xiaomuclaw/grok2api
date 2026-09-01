@@ -63,14 +63,14 @@ services:
   # 启动命令：docker compose --profile flaresolverr up -d
   # Podman：podman compose --profile flaresolverr up -d
 
-  # flaresolverr:
-  #   container_name: flaresolverr
-  #   image: ghcr.io/flaresolverr/flaresolverr:latest
-  #   profiles: ["flaresolverr"]
-  #   environment:
-  #     TZ: Asia/Shanghai
-  #     LOG_LEVEL: info
-  #   restart: unless-stopped
+  flaresolverr:
+    container_name: flaresolverr
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    profiles: ["flaresolverr"]
+    environment:
+      TZ: Asia/Shanghai
+      LOG_LEVEL: info
+    restart: unless-stopped
 
   # ================================ EGRESS QUALITY GUARD ================================
   # 可选的 Grok Build 出口质量守护 sidecar。默认不启动，也不会产生探测请求。
