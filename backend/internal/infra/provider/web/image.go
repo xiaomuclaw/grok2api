@@ -353,7 +353,7 @@ func (a *Adapter) generateLiteImage(ctx context.Context, request provider.ImageG
 		}
 		urls = append(urls, value)
 	}
-	response, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format)
+	response, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format, request.TargetMaxEdge)
 	if response != nil {
 		response.QuotaUnits = count
 	}
@@ -774,7 +774,7 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 		urls = append(urls, image.URL)
 		blobs = append(blobs, image.Blob)
 	}
-	result, err := a.imageResponse(ctx, request.Credential, urls, blobs, count, format)
+	result, err := a.imageResponse(ctx, request.Credential, urls, blobs, count, format, request.TargetMaxEdge)
 	if result != nil {
 		result.QuotaUnits = count
 	}
@@ -910,7 +910,7 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 			"type":    "server_error", "code": "image_edit_incomplete",
 		}}), nil
 	}
-	result, err := a.imageResponse(ctx, request.Credential, urls, nil, 1, format)
+	result, err := a.imageResponse(ctx, request.Credential, urls, nil, 1, format, request.TargetMaxEdge)
 	if result != nil {
 		result.QuotaUnits = 1
 	}
@@ -1455,6 +1455,7 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 			// the current Clearance lease remains valid.
 			if isStatsigRefreshableMediaError(upstreamErr, body) {
 				if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, endpoint) {
+					a.log().Warn("web_media_statsig_retry", "method", http.MethodPost, "path", request.URL.Path)
 					continue
 				}
 				return response, nil
@@ -1472,57 +1473,87 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 	return nil, fmt.Errorf("Grok Web Statsig 刷新失败")
 }
 
-func (a *Adapter) imageResponse(ctx context.Context, credential account.Credential, urls, blobs []string, count int, format string) (*provider.Response, error) {
+func (a *Adapter) imageResponse(ctx context.Context, credential account.Credential, urls, blobs []string, count int, format string, targetMaxEdge int) (*provider.Response, error) {
 	data := make([]any, 0, min(count, len(urls)))
+	savedIDs := make([]string, 0, min(count, len(urls)))
 	for index := 0; index < count && index < len(urls); index++ {
 		blob := ""
 		if index < len(blobs) {
 			blob = blobs[index]
 		}
-		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: urls[index], Blob: blob}, format)
+		item, assetID, err := a.generatedImageDataItem(ctx, credential, imagineImageValue{URL: urls[index], Blob: blob}, format, targetMaxEdge)
 		if err != nil {
+			if cleanupErr := cleanupGeneratedImages(context.WithoutCancel(ctx), a.assets, savedIDs, targetMaxEdge); cleanupErr != nil {
+				a.log().Warn("web_generated_image_cleanup_failed", "asset_ids", savedIDs, "error", cleanupErr)
+			}
 			return nil, err
 		}
+		savedIDs = append(savedIDs, assetID)
 		data = append(data, item)
 	}
 	return jsonProviderResponse(http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": data}), nil
 }
 
+func cleanupGeneratedImages(ctx context.Context, store provider.ImageAssetStore, ids []string, targetMaxEdge int) error {
+	if targetMaxEdge <= 0 {
+		return nil
+	}
+	return provider.CleanupGeneratedImages(ctx, store, ids)
+}
+
 func (a *Adapter) imageDataItem(ctx context.Context, credential account.Credential, image imagineImageValue, format string) (map[string]any, error) {
+	item, _, err := a.generatedImageDataItem(ctx, credential, image, format, 0)
+	return item, err
+}
+
+func (a *Adapter) generatedImageDataItem(ctx context.Context, credential account.Credential, image imagineImageValue, format string, targetMaxEdge int) (map[string]any, string, error) {
 	if a.assets == nil {
-		return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, fmt.Errorf("图片媒体存储未配置"))
+		return nil, "", provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, fmt.Errorf("图片媒体存储未配置"))
 	}
 	raw, err := a.imageBytes(ctx, credential, image)
 	if err != nil {
-		return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingDownload, err)
+		return nil, "", provider.NewMediaPostProcessingError(provider.MediaPostProcessingDownload, err)
 	}
-	asset, err := a.saveImageWithRetry(ctx, raw)
+	processed, err := a.saveGeneratedImageWithRetry(ctx, raw, targetMaxEdge)
 	if err != nil {
-		return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, err)
+		return nil, "", provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, err)
 	}
+	item := map[string]any{"mime_type": processed.Asset.MIMEType, "revised_prompt": ""}
 	if format != "b64_json" {
-		return map[string]any{"url": a.assets.PublicImageURL(asset.ID), "mime_type": asset.MIMEType, "revised_prompt": ""}, nil
+		item["url"] = a.assets.PublicImageURL(processed.Asset.ID)
+	} else {
+		item["b64_json"] = base64.StdEncoding.EncodeToString(processed.Bytes)
 	}
-	return map[string]any{"b64_json": base64.StdEncoding.EncodeToString(raw), "mime_type": asset.MIMEType, "revised_prompt": ""}, nil
+	if targetMaxEdge > 0 {
+		item["width"] = processed.Width
+		item["height"] = processed.Height
+	}
+	return item, processed.Asset.ID, nil
 }
 
-// saveImageWithRetry 只重试当前生成结果的本地持久化，不重新请求上游生成。
+// saveImageWithRetry keeps chat-generated images on the legacy delivery path.
 func (a *Adapter) saveImageWithRetry(ctx context.Context, raw []byte) (mediadomain.Asset, error) {
+	processed, err := a.saveGeneratedImageWithRetry(ctx, raw, 0)
+	return processed.Asset, err
+}
+
+// saveGeneratedImageWithRetry only retries local persistence, never upstream generation.
+func (a *Adapter) saveGeneratedImageWithRetry(ctx context.Context, raw []byte, targetMaxEdge int) (provider.ProcessedImage, error) {
 	var lastErr error
 	for attempt := 0; attempt < mediaOutputAttempts; attempt++ {
-		asset, err := a.assets.SaveImage(ctx, raw)
+		processed, err := provider.DeliverGeneratedImage(ctx, a.assets, raw, targetMaxEdge)
 		if err == nil {
-			return asset, nil
+			return processed, nil
 		}
 		lastErr = err
 		if ctx.Err() != nil || attempt+1 >= mediaOutputAttempts {
 			break
 		}
 		if err := waitMediaOutputRetry(ctx, attempt); err != nil {
-			return mediadomain.Asset{}, err
+			return provider.ProcessedImage{}, err
 		}
 	}
-	return mediadomain.Asset{}, lastErr
+	return provider.ProcessedImage{}, lastErr
 }
 
 func (a *Adapter) imageBytes(ctx context.Context, credential account.Credential, image imagineImageValue) ([]byte, error) {

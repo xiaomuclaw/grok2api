@@ -48,6 +48,8 @@ var (
 	ErrVideoParameterInvalid      = errors.New("视频请求参数无效")
 	ErrVideoOperationUnsupported  = errors.New("视频编辑/延长仅支持路由到 Console grok-imagine-video")
 	ErrLedgerUnavailable          = errors.New("计费账本暂不可用")
+	ErrImageUpscaleDisabled       = errors.New("自动 2K/4K 图片放大未启用")
+	ErrImageUpscaleStreaming      = errors.New("2K/4K 图片请求不支持 stream=true")
 )
 
 const responseOwnershipTTL = 30 * 24 * time.Hour
@@ -227,6 +229,7 @@ type Service struct {
 	modelSyncMu                 sync.Mutex
 	modelSyncing                map[uint64]struct{}
 	markBuildChatDeniedAsReauth atomic.Bool
+	imageUpscaleEnabled         atomic.Bool
 	qualityRetry                atomic.Pointer[QualityRetryRuntime]
 }
 
@@ -269,7 +272,12 @@ func NewService(models routeResolver, audits auditRecorder, accounts *accountapp
 		modelSyncing: make(map[uint64]struct{}),
 	}
 	service.UpdateMaxAttempts(maxAttempts)
+	service.imageUpscaleEnabled.Store(true)
 	return service
+}
+
+func (s *Service) UpdateImageUpscaleEnabled(enabled bool) {
+	s.imageUpscaleEnabled.Store(enabled)
 }
 
 // UpdateBuildForbiddenReauthPolicy atomically replaces the Build account invalidation policy.

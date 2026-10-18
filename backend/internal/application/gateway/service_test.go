@@ -2517,10 +2517,22 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	runQuotaRefreshWorkers(t, accountService)
 	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, responseRepo, 1)
+	if _, err := service.GenerateImage(ctx, ImageGenerationInput{
+		RequestID: "req-image-2k-stream-rejected", ClientKey: key, PublicModel: "grok-imagine-image",
+		Prompt: "test", Count: 1, Resolution: "2k", ResponseFormat: "url", Streaming: true,
+	}); !errors.Is(err, ErrImageUpscaleStreaming) {
+		t.Fatalf("2K stream error = %v", err)
+	}
+	if _, err := service.EditImage(ctx, ImageEditInput{
+		RequestID: "req-image-edit-4k-stream-rejected", ClientKey: key, PublicModel: "grok-imagine-image-edit",
+		Prompt: "edit", ImageURLs: []string{"data:image/png;base64,a"}, Count: 1, Resolution: "4k", ResponseFormat: "url", Streaming: true,
+	}); !errors.Is(err, ErrImageUpscaleStreaming) {
+		t.Fatalf("4K edit stream error = %v", err)
+	}
 
 	result, err := service.GenerateImage(ctx, ImageGenerationInput{
 		RequestID: "req-image-stream", ClientKey: key, PublicModel: "grok-imagine-image",
-		Prompt: "test", Count: 1, Resolution: "2k", Quality: "medium", ResponseFormat: "url", Streaming: true, PartialImages: 1,
+		Prompt: "test", Count: 1, Resolution: "1k", Quality: "medium", ResponseFormat: "url", Streaming: true, PartialImages: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2615,7 +2627,7 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	editResult, err := service.EditImage(ctx, ImageEditInput{
 		RequestID: "req-image-edit", ClientKey: key, PublicModel: "grok-imagine-image-edit",
 		Prompt: "edit", ImageURLs: []string{"data:image/png;base64,a", "data:image/png;base64,b"},
-		Count: 3, Size: "1024x1024", AspectRatio: "1:1", Resolution: "2k", ResponseFormat: "url",
+		Count: 3, Size: "1024x1024", AspectRatio: "1:1", Resolution: "1k", ResponseFormat: "url",
 		Streaming: true, PartialImages: 2,
 	})
 	if err != nil {
@@ -2625,11 +2637,11 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	editResult.Finalize(Usage{}, "", "")
 	_ = editResult.Body.Close()
 	logs, total, err = auditRepo.List(ctx, 0, 10)
-	if err != nil || total != 4 || logs[0].RequestID != "req-image-edit" || logs[0].MediaInputImages != 2 || logs[0].MediaOutputImages != 3 || logs[0].PricingModel != "grok-imagine-image-edit-2k" || logs[0].EstimatedCostInUSDTicks != 2_300_000_000 {
+	if err != nil || total != 4 || logs[0].RequestID != "req-image-edit" || logs[0].MediaInputImages != 2 || logs[0].MediaOutputImages != 3 || logs[0].PricingModel != "grok-imagine-image-edit-1k" || logs[0].EstimatedCostInUSDTicks != 1_700_000_000 {
 		t.Fatalf("image edit pricing audit = %#v, total=%d, err=%v", logs, total, err)
 	}
 	editRequest := adapter.EditRequest()
-	if editRequest.Resolution != "2k" || editRequest.Size != "1024x1024" || editRequest.AspectRatio != "1:1" || !editRequest.Streaming || editRequest.PartialImages != 2 {
+	if editRequest.Resolution != "1k" || editRequest.TargetMaxEdge != 0 || editRequest.Size != "1024x1024" || editRequest.AspectRatio != "1:1" || !editRequest.Streaming || editRequest.PartialImages != 2 {
 		t.Fatalf("image edit request = %#v", editRequest)
 	}
 

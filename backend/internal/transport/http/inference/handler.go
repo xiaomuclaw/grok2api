@@ -411,6 +411,15 @@ func (h *Handler) generateImage(c *gin.Context) {
 		}
 		count = *request.Count
 	}
+	resolution := strings.ToLower(strings.TrimSpace(request.Resolution))
+	if resolution != "" && resolution != "1k" && resolution != "2k" && resolution != "4k" {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "resolution 必须是 1k、2k 或 4k")
+		return
+	}
+	if (resolution == "2k" || resolution == "4k") && request.Stream {
+		writeImageGenerationUserError(c, "unsupported_parameter", "stream", "2K/4K 图片请求不支持 stream=true")
+		return
+	}
 	if request.Stream && count != 1 {
 		writeImageGenerationUserError(c, "unsupported_parameter", "input", "Streaming is only supported with n=1.")
 		return
@@ -439,7 +448,7 @@ func (h *Handler) generateImage(c *gin.Context) {
 	result, err := h.gateway.GenerateImage(c.Request.Context(), gateway.ImageGenerationInput{
 		RequestID: requestID, ClientKey: clientKey, PublicModel: request.Model, Prompt: request.Prompt,
 		Count: count, Size: request.Size, AspectRatio: request.AspectRatio,
-		Resolution: request.Resolution, Quality: quality, ResponseFormat: request.ResponseFormat,
+		Resolution: resolution, Quality: quality, ResponseFormat: request.ResponseFormat,
 		Streaming: request.Stream, PartialImages: partialImages,
 		Method: c.Request.Method, Path: c.Request.URL.Path, Headers: c.Request.Header.Clone(),
 	})
@@ -662,8 +671,12 @@ func (h *Handler) editImage(c *gin.Context) {
 	if resolution == "" {
 		resolution = "1k"
 	}
-	if resolution != "1k" && resolution != "2k" {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "resolution 必须是 1k 或 2k")
+	if resolution != "1k" && resolution != "2k" && resolution != "4k" {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "resolution 必须是 1k、2k 或 4k")
+		return
+	}
+	if (resolution == "2k" || resolution == "4k") && request.Stream {
+		writeImageGenerationUserError(c, "unsupported_parameter", "stream", "2K/4K 图片请求不支持 stream=true")
 		return
 	}
 	quality := strings.ToLower(strings.TrimSpace(request.Quality))
@@ -2313,6 +2326,12 @@ func writeGatewayError(c *gin.Context, err error) {
 		status, code = http.StatusNotFound, "response_not_found"
 		message = "Response 不存在或已过期"
 	case errors.Is(err, gateway.ErrResponseStateUnsupported), errors.Is(err, gateway.ErrConversationUnsupported):
+		status, code = http.StatusBadRequest, "unsupported_parameter"
+		message = err.Error()
+	case errors.Is(err, gateway.ErrImageUpscaleDisabled):
+		status, code = http.StatusBadRequest, "image_upscale_disabled"
+		message = err.Error()
+	case errors.Is(err, gateway.ErrImageUpscaleStreaming):
 		status, code = http.StatusBadRequest, "unsupported_parameter"
 		message = err.Error()
 	case errors.Is(err, gateway.ErrVideoInputTooLarge), errors.Is(err, gateway.ErrVideoInputUnavailable), errors.Is(err, gateway.ErrVideoParameterInvalid):

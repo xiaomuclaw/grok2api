@@ -44,6 +44,22 @@ func TestIsClearanceRefreshableMediaError(t *testing.T) {
 	}
 }
 
+func TestIsStatsigRefreshableMediaError(t *testing.T) {
+	staleBody := []byte(`{"error":{"code":7,"message":"This page is out of date. Reload to continue.","details":[]}}`)
+	stale := newWebMediaUpstreamError(http.StatusForbidden, staleBody, false)
+	if !isStatsigRefreshableMediaError(stale, staleBody) {
+		t.Fatalf("expected Statsig stale response, got %#v", stale)
+	}
+	if isClearanceRefreshableMediaError(stale) {
+		t.Fatal("Statsig stale response must not invalidate Cloudflare clearance")
+	}
+	moderationBody := []byte(`{"error":{"code":"content-moderated","message":"rejected"}}`)
+	moderation := newWebMediaUpstreamError(http.StatusForbidden, moderationBody, false)
+	if isStatsigRefreshableMediaError(moderation, moderationBody) {
+		t.Fatal("moderation response was classified as stale Statsig")
+	}
+}
+
 func TestWebMediaUpstreamErrorProviderResponseIsBounded(t *testing.T) {
 	err := newWebMediaUpstreamError(http.StatusForbidden, nil, false)
 	response := err.providerResponse()

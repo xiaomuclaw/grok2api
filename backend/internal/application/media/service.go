@@ -138,8 +138,12 @@ func (s *Service) SaveInputImage(ctx context.Context, data []byte) (mediadomain.
 }
 
 func (s *Service) saveImage(ctx context.Context, data []byte, expiresAt *time.Time, idPrefix string) (mediadomain.Asset, error) {
+	return s.saveImageWithLimit(ctx, data, expiresAt, idPrefix, s.runtimeConfig().MaxImageBytes)
+}
+
+func (s *Service) saveImageWithLimit(ctx context.Context, data []byte, expiresAt *time.Time, idPrefix string, maxBytes int64) (mediadomain.Asset, error) {
 	cfg := s.runtimeConfig()
-	if len(data) == 0 || int64(len(data)) > cfg.MaxImageBytes {
+	if len(data) == 0 || int64(len(data)) > maxBytes {
 		return mediadomain.Asset{}, ErrInvalidImage
 	}
 	mimeType := http.DetectContentType(data)

@@ -168,6 +168,9 @@ export function SettingsPage() {
           <SettingsPane value="delivery">
           <SettingsSection title={t("settings.media.title")}>
             <div className="space-y-0">
+              <SettingsField controlId="media-image-upscale-enabled" label={t("settings.media.imageUpscaleEnabled")} description={t("settings.media.imageUpscaleEnabledHelp")}>
+                <Controller control={form.control} name="media.imageUpscaleEnabled" render={({ field }) => <div className="flex h-9 items-center"><Switch id="media-image-upscale-enabled" checked={field.value} onCheckedChange={field.onChange} /></div>} />
+              </SettingsField>
               <SettingsField controlId="media-max-image-size" label={t("settings.media.maxImageSize")} description={t("settings.media.maxImageSizeHelp")} error={form.formState.errors.media?.maxImageSize?.message}>
                 <Controller control={form.control} name="media.maxImageSize" render={({ field }) => <ByteSizeInput id="media-max-image-size" value={field.value} onChange={field.onChange} />} />
               </SettingsField>

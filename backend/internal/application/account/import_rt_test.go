@@ -206,3 +206,25 @@ func TestImportRefreshTokenPersistsRotationBeforeProgressFailure(t *testing.T) {
 		t.Fatalf("stored refresh token = %q", refreshToken)
 	}
 }
+
+func TestImportedSeedRequiresPreparation(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name string
+		seed provider.CredentialSeed
+		want bool
+	}{
+		{name: "refresh token only", seed: provider.CredentialSeed{RefreshToken: "rt"}, want: true},
+		{name: "expired access token", seed: provider.CredentialSeed{AccessToken: "expired", RefreshToken: "rt", ExpiresAt: now.Add(-time.Minute)}, want: true},
+		{name: "valid access token", seed: provider.CredentialSeed{AccessToken: "valid", RefreshToken: "rt", ExpiresAt: now.Add(time.Hour)}, want: false},
+		{name: "opaque access token without expiry", seed: provider.CredentialSeed{AccessToken: "opaque", RefreshToken: "rt"}, want: false},
+		{name: "expired without refresh token", seed: provider.CredentialSeed{AccessToken: "expired", ExpiresAt: now.Add(-time.Minute)}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := importedSeedRequiresPreparation(test.seed, now); got != test.want {
+				t.Fatalf("requires preparation = %v, want %v", got, test.want)
+			}
+		})
+	}
+}

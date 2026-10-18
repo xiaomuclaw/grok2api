@@ -3,10 +3,12 @@ package console
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,7 +18,6 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
-	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
@@ -111,11 +112,15 @@ func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGener
 	if err != nil {
 		return invalidConsoleMediaRequest(err.Error()), nil
 	}
+	upstreamFormat := format
+	if request.TargetMaxEdge > 0 {
+		upstreamFormat = "url"
+	}
 	quality, err := normalizeConsoleImageQuality(request.Model, request.Quality)
 	if err != nil {
 		return invalidConsoleMediaRequest(err.Error()), nil
 	}
-	payload := map[string]any{"model": request.Model, "prompt": request.Prompt, "n": count, "response_format": format}
+	payload := map[string]any{"model": request.Model, "prompt": request.Prompt, "n": count, "response_format": upstreamFormat}
 	if ratio != "" {
 		payload["aspect_ratio"] = ratio
 	}
@@ -125,7 +130,7 @@ func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGener
 	if quality != "" {
 		payload["quality"] = quality
 	}
-	return a.forwardConsoleMedia(ctx, request.Credential, "/images/generations", payload, format, count)
+	return a.forwardConsoleMedia(ctx, request.Credential, "/images/generations", payload, upstreamFormat, format, count, request.TargetMaxEdge)
 }
 
 func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditRequest) (*provider.Response, error) {
@@ -169,7 +174,11 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 		}
 		images = append(images, map[string]any{"type": "image_url", "url": value})
 	}
-	payload := map[string]any{"model": request.Model, "prompt": request.Prompt, "n": count, "response_format": format}
+	upstreamFormat := format
+	if request.TargetMaxEdge > 0 {
+		upstreamFormat = "url"
+	}
+	payload := map[string]any{"model": request.Model, "prompt": request.Prompt, "n": count, "response_format": upstreamFormat}
 	if len(images) == 1 {
 		payload["image"] = images[0]
 	} else {
@@ -184,10 +193,10 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 	if quality != "" {
 		payload["quality"] = quality
 	}
-	return a.forwardConsoleMedia(ctx, request.Credential, "/images/edits", payload, format, count)
+	return a.forwardConsoleMedia(ctx, request.Credential, "/images/edits", payload, upstreamFormat, format, count, request.TargetMaxEdge)
 }
 
-func (a *Adapter) forwardConsoleMedia(ctx context.Context, credential account.Credential, path string, payload any, format string, quotaUnits int) (*provider.Response, error) {
+func (a *Adapter) forwardConsoleMedia(ctx context.Context, credential account.Credential, path string, payload any, upstreamFormat, responseFormat string, quotaUnits, targetMaxEdge int) (*provider.Response, error) {
 	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
 		return nil, err
@@ -245,7 +254,7 @@ func (a *Adapter) forwardConsoleMedia(ctx context.Context, credential account.Cr
 		result.RateLimit = rateLimit
 		return result, nil
 	}
-	if format == "url" {
+	if upstreamFormat == "url" {
 		data, readErr := io.ReadAll(io.LimitReader(response.Body, consoleMediaBodyLimit+1))
 		_ = response.Body.Close()
 		a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, readErr)
@@ -255,7 +264,7 @@ func (a *Adapter) forwardConsoleMedia(ctx context.Context, credential account.Cr
 			readErr = errors.New("Console 图片上游响应超过 2 MiB")
 		}
 		if readErr == nil {
-			data, readErr = a.localizeConsoleImageResponse(ctx, credential, cfg.BaseURL, data)
+			data, readErr = a.localizeConsoleImageResponse(ctx, credential, cfg.BaseURL, data, responseFormat, targetMaxEdge)
 		}
 		if readErr != nil {
 			if !provider.IsMediaPostProcessingError(readErr) {
@@ -283,7 +292,7 @@ func (a *Adapter) forwardConsoleMedia(ctx context.Context, credential account.Cr
 	return result, nil
 }
 
-func (a *Adapter) localizeConsoleImageResponse(ctx context.Context, credential account.Credential, baseURL string, data []byte) ([]byte, error) {
+func (a *Adapter) localizeConsoleImageResponse(ctx context.Context, credential account.Credential, baseURL string, data []byte, responseFormat string, targetMaxEdge int) ([]byte, error) {
 	if a.assets == nil {
 		return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, errors.New("图片媒体存储未配置"))
 	}
@@ -296,6 +305,15 @@ func (a *Adapter) localizeConsoleImageResponse(ctx context.Context, credential a
 		return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingDownload, errors.New("Console 图片响应缺少有效 data"))
 	}
 
+	savedIDs := make([]string, 0, len(items))
+	cleanup := func() {
+		if targetMaxEdge <= 0 {
+			return
+		}
+		if err := provider.CleanupGeneratedImages(context.WithoutCancel(ctx), a.assets, savedIDs); err != nil {
+			slog.Default().Warn("console_generated_image_cleanup_failed", "asset_ids", savedIDs, "error", err)
+		}
+	}
 	for index, item := range items {
 		var rawURL string
 		if err := json.Unmarshal(item["url"], &rawURL); err != nil || strings.TrimSpace(rawURL) == "" {
@@ -303,14 +321,26 @@ func (a *Adapter) localizeConsoleImageResponse(ctx context.Context, credential a
 		}
 		raw, err := a.downloadConsoleImage(ctx, credential, baseURL, rawURL)
 		if err != nil {
+			cleanup()
 			return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingDownload, err)
 		}
-		asset, err := a.saveConsoleImage(ctx, raw)
+		processed, err := a.saveConsoleImage(ctx, raw, targetMaxEdge)
 		if err != nil {
+			cleanup()
 			return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, err)
 		}
-		items[index]["url"], _ = json.Marshal(a.assets.PublicImageURL(asset.ID))
-		items[index]["mime_type"], _ = json.Marshal(asset.MIMEType)
+		savedIDs = append(savedIDs, processed.Asset.ID)
+		delete(items[index], "url")
+		if responseFormat == "b64_json" {
+			items[index]["b64_json"], _ = json.Marshal(base64.StdEncoding.EncodeToString(processed.Bytes))
+		} else {
+			items[index]["url"], _ = json.Marshal(a.assets.PublicImageURL(processed.Asset.ID))
+		}
+		items[index]["mime_type"], _ = json.Marshal(processed.Asset.MIMEType)
+		if targetMaxEdge > 0 {
+			items[index]["width"], _ = json.Marshal(processed.Width)
+			items[index]["height"], _ = json.Marshal(processed.Height)
+		}
 	}
 	encodedItems, err := json.Marshal(items)
 	if err != nil {
@@ -397,17 +427,17 @@ func (a *Adapter) downloadConsoleImageAttempt(ctx context.Context, credential ac
 	return raw, false, nil
 }
 
-func (a *Adapter) saveConsoleImage(ctx context.Context, raw []byte) (asset mediadomain.Asset, err error) {
+func (a *Adapter) saveConsoleImage(ctx context.Context, raw []byte, targetMaxEdge int) (processed provider.ProcessedImage, err error) {
 	for attempt := 0; attempt < consoleMediaOutputAttempts; attempt++ {
-		asset, err = a.assets.SaveImage(ctx, raw)
+		processed, err = provider.DeliverGeneratedImage(ctx, a.assets, raw, targetMaxEdge)
 		if err == nil || ctx.Err() != nil || attempt+1 >= consoleMediaOutputAttempts {
-			return asset, err
+			return processed, err
 		}
 		if err = waitConsoleMediaRetry(ctx, attempt); err != nil {
-			return mediadomain.Asset{}, err
+			return provider.ProcessedImage{}, err
 		}
 	}
-	return asset, err
+	return processed, err
 }
 
 func waitConsoleMediaRetry(ctx context.Context, attempt int) error {

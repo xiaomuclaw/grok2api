@@ -1079,10 +1079,13 @@ func (a *Adapter) ParseImportedCredentials(data []byte) ([]provider.CredentialSe
 	return parseImportedCredentials(data)
 }
 
-// PrepareImportedCredential validates a refresh-token-only import and keeps
-// the rotated tokens returned by xAI before the account is persisted.
+// PrepareImportedCredential validates imports that cannot use their submitted
+// access token and keeps rotated tokens returned by xAI before persistence.
 func (a *Adapter) PrepareImportedCredential(ctx context.Context, seed provider.CredentialSeed) (provider.CredentialSeed, error) {
-	if strings.TrimSpace(seed.AccessToken) != "" || strings.TrimSpace(seed.RefreshToken) == "" {
+	if strings.TrimSpace(seed.RefreshToken) == "" {
+		return seed, nil
+	}
+	if strings.TrimSpace(seed.AccessToken) != "" && (seed.ExpiresAt.IsZero() || seed.ExpiresAt.After(time.Now().UTC())) {
 		return seed, nil
 	}
 	refreshCtx, cancel := context.WithTimeout(ctx, buildControlTimeout)

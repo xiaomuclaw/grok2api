@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +61,29 @@ type imageProviderSupport func(accountdomain.Provider) bool
 
 type imageExecution func(context.Context, accountdomain.Provider, accountdomain.Credential, string) (*provider.Response, error)
 
+type imageOutputPlan struct {
+	upstreamResolution string
+	targetMaxEdge      int
+}
+
+func planImageOutput(providerValue accountdomain.Provider, operation audit.Operation, requestedResolution string) imageOutputPlan {
+	requestedResolution = strings.ToLower(strings.TrimSpace(requestedResolution))
+	targetMaxEdge := 0
+	switch requestedResolution {
+	case "2k":
+		targetMaxEdge = 2048
+	case "4k":
+		targetMaxEdge = 4096
+	default:
+		return imageOutputPlan{upstreamResolution: requestedResolution}
+	}
+	upstreamResolution := "2k"
+	if providerValue == accountdomain.ProviderWeb && operation == audit.OperationImageEdit {
+		upstreamResolution = "1k"
+	}
+	return imageOutputPlan{upstreamResolution: upstreamResolution, targetMaxEdge: targetMaxEdge}
+}
+
 // GenerateImage 选择支持图片生成的路由和账号，并返回可统一审计的上游响应。
 func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput) (*Result, error) {
 	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImage, modeldomain.CapabilityImage, func(providerValue accountdomain.Provider) bool {
@@ -70,9 +94,10 @@ func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput)
 		if !ok {
 			return nil, ErrNoAvailableAccount
 		}
+		plan := planImageOutput(providerValue, audit.OperationImage, input.Resolution)
 		return adapter.GenerateImage(executionCtx, provider.ImageGenerationRequest{
 			Credential: credential, Model: upstream, Prompt: input.Prompt, Count: input.Count,
-			Size: input.Size, AspectRatio: input.AspectRatio, Resolution: input.Resolution, Quality: input.Quality,
+			Size: input.Size, AspectRatio: input.AspectRatio, Resolution: plan.upstreamResolution, Quality: input.Quality, TargetMaxEdge: plan.targetMaxEdge,
 			ResponseFormat: input.ResponseFormat, Streaming: input.Streaming, PartialImages: input.PartialImages,
 		})
 	}, input.Streaming, input.Resolution, input.Quality, input.Count, 0, input.Method, input.Path, input.Headers)
@@ -88,10 +113,11 @@ func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result,
 		if !ok {
 			return nil, ErrNoAvailableAccount
 		}
+		plan := planImageOutput(providerValue, audit.OperationImageEdit, input.Resolution)
 		return adapter.EditImage(executionCtx, provider.ImageEditRequest{
 			Credential: credential, Model: upstream, Prompt: input.Prompt,
 			ImageURLs: input.ImageURLs, Count: input.Count, Size: input.Size, AspectRatio: input.AspectRatio,
-			Resolution: input.Resolution, Quality: input.Quality, ResponseFormat: input.ResponseFormat,
+			Resolution: plan.upstreamResolution, Quality: input.Quality, TargetMaxEdge: plan.targetMaxEdge, ResponseFormat: input.ResponseFormat,
 			Streaming: input.Streaming, PartialImages: input.PartialImages,
 		})
 	}, input.Streaming, input.Resolution, input.Quality, input.Count, len(input.ImageURLs), input.Method, input.Path, input.Headers)
@@ -133,6 +159,13 @@ func (s *Service) executeImage(
 		}
 		preselectedSession = nil
 	}
+	outputPlan := planImageOutput(route.Provider, operation, resolution)
+	if outputPlan.targetMaxEdge > 0 && streaming {
+		return nil, ErrImageUpscaleStreaming
+	}
+	if outputPlan.targetMaxEdge > 0 && !s.imageUpscaleEnabled.Load() {
+		return nil, ErrImageUpscaleDisabled
+	}
 	externalModel := modeldomain.ExternalPublicID(route.Provider, route.PublicID)
 	auditBase := audit.Record{
 		EventID: eventID, RequestID: requestID, ClientKeyID: key.ID, ClientKeyName: key.Name,
@@ -166,7 +199,7 @@ func (s *Service) executeImage(
 		}
 	}
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
-	pricingResolution, pricingQuality := resolution, quality
+	pricingResolution, pricingQuality := outputPlan.upstreamResolution, quality
 	if route.Provider == accountdomain.ProviderWeb && operation == audit.OperationImage {
 		// Grok Web Imagine selects the product through the catalog model and
 		// only forwards aspect_ratio/n. Do not reserve or record a price tier

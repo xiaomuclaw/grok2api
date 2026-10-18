@@ -38,7 +38,7 @@ func TestExportCredentialsRoundTripsImportFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expiresAt := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	expiresAt := time.Date(2030, 7, 12, 12, 0, 0, 0, time.UTC)
 	repository := relational.NewAccountRepository(database)
 	created, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{
 		Provider: accountdomain.ProviderBuild, Name: "primary", Email: "user@example.com", UserID: "user-1",

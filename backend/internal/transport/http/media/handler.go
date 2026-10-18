@@ -38,6 +38,7 @@ func (h *Handler) RegisterAdmin(router *gin.RouterGroup) {
 	router.GET("/media/images", h.listImages)
 	router.DELETE("/media/images", h.deleteImages)
 	router.GET("/media/images/stats", h.imageStats)
+	router.POST("/media/images/:id/upscale", h.upscaleImage)
 	router.POST("/media/inputs/import", h.importInputImageFromURL)
 	router.POST("/media/inputs/upload", h.uploadInputAsset)
 	router.GET("/media/videos", h.listVideos)
@@ -243,4 +244,38 @@ func parsePagination(c *gin.Context) (int, int) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
 	return repository.NormalizePage(page, pageSize, repository.DefaultPageSize)
+}
+
+// upscaleImage 放大指定图片到 2048 或 4096 像素（较长边），保存为新图片并返回其地址。
+// 原图保持不变。刻意不加 Swagger 注解：仓库 CI 会校验 docs.go 与注解一致，
+// 而 docs.go 是上游生成物，改动它会在每次合并上游时冲突。
+func (h *Handler) upscaleImage(c *gin.Context) {
+	imageID := c.Param("id")
+	targetSize, _ := strconv.Atoi(c.Query("size"))
+
+	if targetSize != 2048 && targetSize != 4096 {
+		response.Error(c, http.StatusBadRequest, "invalidSize", "size 必须是 2048 或 4096")
+		return
+	}
+
+	newAsset, err := h.service.UpscaleImage(c.Request.Context(), imageID, targetSize)
+	if errors.Is(err, mediaapp.ErrAssetNotFound) {
+		response.Error(c, http.StatusNotFound, "imageNotFound", "图片不存在")
+		return
+	}
+	if errors.Is(err, mediaapp.ErrUpscaleFailed) {
+		response.Error(c, http.StatusInternalServerError, "upscaleFailed", err.Error())
+		return
+	}
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "upscaleError", "放大图片失败")
+		return
+	}
+
+	response.Success(c, http.StatusOK, gin.H{
+		"url":       h.service.PublicImageURL(newAsset.ID),
+		"id":        newAsset.ID,
+		"size":      newAsset.SizeBytes,
+		"mime_type": newAsset.MIMEType,
+	})
 }

@@ -55,6 +55,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	input.Media.MaxTotalBytes = 2 << 30
 	input.Media.CleanupThresholdPercent = 75
 	input.Media.CleanupInterval = "5m"
+	input.Media.ImageUpscaleEnabled = false
 	input.Frontend.PublicAPIBaseURL = "https://public.example.com"
 	input.ProviderConsole.BaseURL = "https://console.example.com"
 	input.ProviderConsole.ChatTimeout = "6m"
@@ -76,7 +77,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if applied.Provider.Build.ResponseHeaderTimeout.Value() != 7*time.Minute {
 		t.Fatalf("Build response header timeout was not applied: %s", applied.Provider.Build.ResponseHeaderTimeout.Value())
 	}
-	if applied.Media.MaxTotalBytes != 2<<30 || applied.Media.CleanupThresholdPercent != 75 || applied.Media.CleanupInterval.Value() != 5*time.Minute {
+	if applied.Media.MaxTotalBytes != 2<<30 || applied.Media.CleanupThresholdPercent != 75 || applied.Media.CleanupInterval.Value() != 5*time.Minute || applied.Media.ImageUpscaleEnabled {
 		t.Fatalf("media configuration was not applied: %#v", applied.Media)
 	}
 	if applied.Frontend.PublicAPIBaseURLOverride != "https://public.example.com" || applied.Frontend.EffectivePublicAPIBaseURL() != "https://public.example.com" {
@@ -98,7 +99,7 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.Server.MaxConcurrentRequests != 2048 || reloaded.Provider.Build.ResponseHeaderTimeout.Value() != 7*time.Minute || reloaded.Routing.MaxAttempts != 5 || !reloaded.Routing.PreferFreeBuild || !reloaded.Routing.SegmentedSelectorEnabled || reloaded.Routing.SegmentedMinCandidates != 5000 || reloaded.Routing.SegmentedWindowSize != 96 || reloaded.Audit.BufferSize != input.Audit.BufferSize || reloaded.Media.MaxTotalBytes != 2<<30 || reloaded.Media.CleanupThresholdPercent != 75 || reloaded.Batch.SyncConcurrency != 28 || reloaded.Batch.RandomDelay.Value() != 750*time.Millisecond || reloaded.Provider.Console.BaseURL != "https://console.example.com" || reloaded.Provider.Web.ClearanceMode != config.ClearanceModeOnDemand {
+	if reloaded.Server.MaxConcurrentRequests != 2048 || reloaded.Provider.Build.ResponseHeaderTimeout.Value() != 7*time.Minute || reloaded.Routing.MaxAttempts != 5 || !reloaded.Routing.PreferFreeBuild || !reloaded.Routing.SegmentedSelectorEnabled || reloaded.Routing.SegmentedMinCandidates != 5000 || reloaded.Routing.SegmentedWindowSize != 96 || reloaded.Audit.BufferSize != input.Audit.BufferSize || reloaded.Media.MaxTotalBytes != 2<<30 || reloaded.Media.CleanupThresholdPercent != 75 || reloaded.Media.ImageUpscaleEnabled || reloaded.Batch.SyncConcurrency != 28 || reloaded.Batch.RandomDelay.Value() != 750*time.Millisecond || reloaded.Provider.Console.BaseURL != "https://console.example.com" || reloaded.Provider.Web.ClearanceMode != config.ClearanceModeOnDemand {
 		t.Fatalf("configuration was not persisted")
 	}
 }
@@ -299,6 +300,39 @@ func TestLoadPersistedKeepsAccountIsolationDefaultForOlderPayload(t *testing.T) 
 	}
 	if !loaded.Routing.AccountIsolatedConnections {
 		t.Fatal("older persisted payload disabled config.yaml account isolation")
+	}
+}
+
+func TestLoadPersistedKeepsImageUpscaleEnabledForOlderPayload(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Media.ImageUpscaleEnabled = true
+	value := toDomainConfig(cfg)
+	value.Media.ImageUpscaleEnabled = nil
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Media.ImageUpscaleEnabled {
+		t.Fatal("older persisted payload disabled automatic 2K/4K upscaling")
+	}
+}
+
+func TestLoadPersistedPreservesExplicitlyDisabledImageUpscale(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Media.ImageUpscaleEnabled = true
+	value := toDomainConfig(cfg)
+	disabled := false
+	value.Media.ImageUpscaleEnabled = &disabled
+	repository := &runtimeSettingsRepositoryStub{value: value, found: true}
+
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Media.ImageUpscaleEnabled {
+		t.Fatal("explicitly disabled automatic 2K/4K upscaling was ignored")
 	}
 }
 

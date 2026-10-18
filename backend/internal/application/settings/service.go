@@ -87,6 +87,8 @@ type MediaConfig struct {
 	MaxTotalBytes           int64
 	CleanupThresholdPercent int
 	CleanupInterval         string
+	ImageUpscaleEnabled     bool
+	ImageUpscaleProvided    bool
 }
 
 // FrontendConfig 是管理接口使用的公开 API 地址输入。
@@ -386,6 +388,9 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	base.Media.MaxTotalBytes = value.Media.MaxTotalBytes
 	base.Media.CleanupThresholdPercent = value.Media.CleanupThresholdPercent
 	base.Media.CleanupInterval = config.Duration(value.Media.CleanupInterval)
+	if value.Media.ImageUpscaleEnabled != nil {
+		base.Media.ImageUpscaleEnabled = *value.Media.ImageUpscaleEnabled
+	}
 	base.Frontend.PublicAPIBaseURLOverride = strings.TrimSpace(value.Frontend.PublicAPIBaseURL)
 	segmentedEnabled := base.Routing.SegmentedSelectorEnabled
 	segmentedMinCandidates := base.Routing.SegmentedMinCandidates
@@ -486,6 +491,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		Media: settingsdomain.MediaConfig{
 			MaxImageBytes: value.Media.MaxImageBytes, MaxTotalBytes: value.Media.MaxTotalBytes,
 			CleanupThresholdPercent: value.Media.CleanupThresholdPercent, CleanupInterval: value.Media.CleanupInterval.Value(),
+			ImageUpscaleEnabled: boolPointer(value.Media.ImageUpscaleEnabled),
 		},
 		Frontend: settingsdomain.FrontendConfig{
 			PublicAPIBaseURL: value.Frontend.PublicAPIBaseURLOverride,
@@ -520,6 +526,8 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		},
 	}
 }
+
+func boolPointer(value bool) *bool { return &value }
 
 func intPointer(value int) *int { return &value }
 
@@ -582,6 +590,9 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Media.MaxImageBytes = input.Media.MaxImageBytes
 	next.Media.MaxTotalBytes = input.Media.MaxTotalBytes
 	next.Media.CleanupThresholdPercent = input.Media.CleanupThresholdPercent
+	if input.Media.ImageUpscaleProvided {
+		next.Media.ImageUpscaleEnabled = input.Media.ImageUpscaleEnabled
+	}
 	next.Frontend.PublicAPIBaseURLOverride = strings.TrimSpace(input.Frontend.PublicAPIBaseURL)
 	next.Routing.MaxAttempts = input.Routing.MaxAttempts
 	next.Routing.VideoMaxAttempts = input.Routing.VideoMaxAttempts
@@ -727,6 +738,7 @@ func toEditable(cfg config.Config) EditableConfig {
 		Media: MediaConfig{
 			MaxImageBytes: cfg.Media.MaxImageBytes, MaxTotalBytes: cfg.Media.MaxTotalBytes,
 			CleanupThresholdPercent: cfg.Media.CleanupThresholdPercent, CleanupInterval: cfg.Media.CleanupInterval.String(),
+			ImageUpscaleEnabled: cfg.Media.ImageUpscaleEnabled, ImageUpscaleProvided: true,
 		},
 		Frontend: FrontendConfig{
 			PublicAPIBaseURL: cfg.Frontend.PublicAPIBaseURLOverride,

@@ -1727,6 +1727,62 @@ func TestConsoleImageGenerationForwardsStandardDPoPRequest(t *testing.T) {
 	}
 }
 
+func TestConsole4KBase64UsesProcessedImageBytes(t *testing.T) {
+	source := []byte("source-image")
+	processed := []byte("processed-4k-image")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		if request.URL.Path == "/generated.png" && request.Method == http.MethodGet {
+			writer.Header().Set("Content-Type", "image/png")
+			_, _ = writer.Write(source)
+			return
+		}
+		if request.URL.Path != "/v1/images/generations" || request.Method != http.MethodPost {
+			http.NotFound(writer, request)
+			return
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["resolution"] != "2k" || payload["response_format"] != "url" {
+			t.Errorf("4K upstream payload = %#v", payload)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{"data": []any{map[string]any{"url": "http://" + request.Host + "/generated.png"}}})
+	}))
+	t.Cleanup(server.Close)
+	store := &consoleGeneratedImageStoreStub{processed: processed}
+	adapter, credential := newConsoleTestAdapterWithAssets(t, server.URL, store)
+	response, err := adapter.GenerateImage(context.Background(), provider.ImageGenerationRequest{
+		Credential: credential, Model: "grok-imagine-image-quality", Prompt: "draw",
+		Count: 1, Resolution: "2k", TargetMaxEdge: 4096, ResponseFormat: "b64_json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var result struct {
+		Data []struct {
+			Base64 string `json:"b64_json"`
+			Width  int    `json:"width"`
+			Height int    `json:"height"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(result.Data[0].Base64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded, processed) || !bytes.Equal(store.received, source) || store.target != 4096 || result.Data[0].Width != 4096 || result.Data[0].Height != 2048 {
+		t.Fatalf("data=%#v decoded=%q received=%q target=%d", result.Data, decoded, store.received, store.target)
+	}
+}
+
 func TestConsoleImageEditForwardsMultipleImages(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if serveTestDPoPToken(t, writer, request) {
@@ -2292,6 +2348,33 @@ func newConsoleTestAdapterWithAssets(t *testing.T, baseURL string, assets provid
 type consoleImageAssetStoreStub struct {
 	mu    sync.Mutex
 	saved [][]byte
+}
+
+type consoleGeneratedImageStoreStub struct {
+	processed []byte
+	received  []byte
+	target    int
+}
+
+func (*consoleGeneratedImageStoreStub) SaveImage(context.Context, []byte) (mediadomain.Asset, error) {
+	return mediadomain.Asset{}, errors.New("legacy save should not be used for 4K")
+}
+
+func (*consoleGeneratedImageStoreStub) PublicImageURL(string) string {
+	return "https://local.example/v1/media/images/console-4k"
+}
+
+func (s *consoleGeneratedImageStoreStub) ProcessGeneratedImage(_ context.Context, data []byte, target int) (provider.ProcessedImage, error) {
+	s.received = bytes.Clone(data)
+	s.target = target
+	return provider.ProcessedImage{
+		Asset: mediadomain.Asset{ID: "console-4k", MIMEType: "image/png"}, Bytes: s.processed,
+		Width: 4096, Height: 2048, SourceWidth: 1024, SourceHeight: 512, Upscaled: true,
+	}, nil
+}
+
+func (*consoleGeneratedImageStoreStub) DeleteGeneratedImage(context.Context, string) error {
+	return nil
 }
 
 func (s *consoleImageAssetStoreStub) SaveImage(_ context.Context, data []byte) (mediadomain.Asset, error) {
