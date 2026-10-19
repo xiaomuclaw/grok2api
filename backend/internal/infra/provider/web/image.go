@@ -751,7 +751,7 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 			continue
 		}
 		if message["type"] == "error" {
-			upstreamErr := fmt.Errorf("Imagine WebSocket 返回错误")
+			upstreamErr := imagineWebSocketError(message)
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, upstreamErr)
 			return nil, upstreamErr
 		}
@@ -1569,6 +1569,64 @@ func (a *Adapter) imageBytes(ctx context.Context, credential account.Credential,
 	return a.downloadImage(ctx, credential, image.URL)
 }
 
+// imagineWebSocketError preserves the upstream error code/message so the
+// gateway can distinguish account quota exhaustion from transient transport
+// failures. The previous fixed message made every WebSocket error a 502.
+func imagineWebSocketError(message map[string]any) error {
+	code, text := "", ""
+	extract := func(value any) {
+		switch item := value.(type) {
+		case string:
+			if text == "" {
+				text = item
+			}
+		case map[string]any:
+			if code == "" {
+				if value, ok := item["code"].(string); ok {
+					code = value
+				}
+			}
+			if text == "" {
+				if value, ok := item["message"].(string); ok {
+					text = value
+				}
+			}
+			if text == "" {
+				if value, ok := item["type"].(string); ok {
+					text = value
+				}
+			}
+		}
+	}
+	extract(message["error"])
+	if code == "" {
+		if value, ok := message["code"].(string); ok {
+			code = value
+		}
+	}
+	if text == "" {
+		if value, ok := message["message"].(string); ok {
+			text = value
+		}
+	}
+	if text == "" {
+		if value, ok := message["reason"].(string); ok {
+			text = value
+		}
+	}
+	combined := strings.TrimSpace(strings.Join([]string{code, text}, " "))
+	if provider.IsQuotaMessage(combined) {
+		return &provider.QuotaError{Code: code, Message: text, ModelScoped: true}
+	}
+	if combined == "" {
+		return errors.New("Imagine WebSocket 返回错误")
+	}
+	if len(combined) > 300 {
+		combined = combined[:300]
+	}
+	return fmt.Errorf("Imagine WebSocket 返回错误: %s", combined)
+}
+
 func (a *Adapter) streamImagineImages(ctx context.Context, writer *io.PipeWriter, connection *websocket.Conn, lease *egress.Lease, credential account.Credential, count, partialImages int, modelConfig imagineModelConfig, requestID ...string) {
 	defer lease.Release()
 	defer connection.Close()
@@ -1603,7 +1661,7 @@ func (a *Adapter) streamImagineImages(ctx context.Context, writer *io.PipeWriter
 			continue
 		}
 		if message["type"] == "error" {
-			upstreamErr := fmt.Errorf("Imagine WebSocket 返回错误")
+			upstreamErr := imagineWebSocketError(message)
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, upstreamErr)
 			_ = writer.CloseWithError(upstreamErr)
 			return

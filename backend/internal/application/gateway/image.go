@@ -18,6 +18,29 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/pkg/requestmeta"
 )
 
+const (
+	imageRoutingMaxAttempts    = 5
+	maxImageRoutingAttempts    = 20
+	imageQuotaFallbackCooldown = 10 * time.Minute
+	imageQuotaBlockJitter      = 2 * time.Minute
+)
+
+// imageQuotaRetryAfter blocks an exhausted image account until its rolling
+// quota reset. The jitter avoids every account waking at the same second.
+func imageQuotaRetryAfter(lease *accountLease, now time.Time, fallback time.Duration) time.Duration {
+	if lease != nil && lease.routingCandidate != nil && lease.routingCandidate.QuotaWindow != nil {
+		if resetAt := lease.routingCandidate.QuotaWindow.ResetAt; resetAt != nil {
+			if remaining := resetAt.Sub(now); remaining > 0 {
+				return remaining + imageQuotaBlockJitter
+			}
+		}
+	}
+	if fallback <= 0 {
+		return imageQuotaFallbackCooldown
+	}
+	return fallback
+}
+
 // ImageGenerationInput 表示图片生成用例已经完成协议校验后的输入。
 type ImageGenerationInput struct {
 	RequestID      string
@@ -180,10 +203,13 @@ func (s *Service) executeImage(
 	if err := s.checkLedgerReady(); err != nil {
 		return nil, err
 	}
+	attempts := make([]audit.Attempt, 0, imageRoutingMaxAttempts)
 	writeFailureAudit := func(statusCode int, errorCode string, credential *accountdomain.Credential) {
 		record := auditBase
 		record.StatusCode = statusCode
 		record.ErrorCode = errorCode
+		record.AttemptCount = len(attempts)
+		record.Attempts = append([]audit.Attempt(nil), attempts...)
 		record.DurationMS = time.Since(startedAt).Milliseconds()
 		record.CreatedAt = time.Now().UTC()
 		if credential != nil {
@@ -198,6 +224,24 @@ func (s *Service) executeImage(
 			s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", requestID, "error", auditErr)
 		}
 	}
+	recordAttempt := func(credential accountdomain.Credential, source audit.AttemptSource, stage string, started time.Time, status *int, err error) {
+		accountID := credential.ID
+		item := audit.Attempt{
+			Number:             len(attempts) + 1,
+			Source:             source,
+			Stage:              stage,
+			AccountID:          &accountID,
+			AccountName:        credential.Name,
+			StartedAt:          started,
+			DurationMS:         time.Since(started).Milliseconds(),
+			UpstreamStatusCode: status,
+		}
+		if err != nil {
+			item.TransportError = err.Error()
+		}
+		attempts = append(attempts, item)
+	}
+
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
 	pricingResolution, pricingQuality := outputPlan.upstreamResolution, quality
 	if route.Provider == accountdomain.ProviderWeb && operation == audit.OperationImage {
@@ -229,7 +273,17 @@ func (s *Service) executeImage(
 	}()
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
 	quotaRefreshGroup := s.providers.QuotaRefreshGroup(route.Provider, route.UpstreamModel)
-	attemptPolicy := newRoutingAttemptPolicy(int(s.maxAttempts.Load()))
+	imageAttempts := int(s.imageMaxAttempts.Load())
+	if imageAttempts <= 0 {
+		imageAttempts = imageRoutingMaxAttempts
+	}
+	if imageAttempts > maxImageRoutingAttempts {
+		imageAttempts = maxImageRoutingAttempts
+	}
+	if configured := int(s.maxAttempts.Load()); configured > 0 && configured < imageAttempts {
+		imageAttempts = configured
+	}
+	attemptPolicy := newRoutingAttemptPolicy(imageAttempts)
 	excluded := make(map[uint64]bool)
 	selection := preselectedSession
 	var lease *accountLease
@@ -237,13 +291,23 @@ func (s *Service) executeImage(
 	var response *provider.Response
 	var lastCredentialFailure *accountdomain.Credential
 	var lastCredentialError error
+	var quotaExhausted bool
+	var earliestQuotaRetry time.Duration
 	for attempt := 0; attemptPolicy.allows(attempt); attempt++ {
+		attemptStarted := time.Now().UTC()
 		if selection == nil {
 			selection, err = s.selector.beginSelectionSessionForKey(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, key.AccountScope())
+			if err != nil {
+				errorCode := "upstream_unavailable"
+				var selectionFailure *SelectionUnavailableError
+				if errors.As(err, &selectionFailure) {
+					errorCode = selectionFailure.Code()
+				}
+				writeFailureAudit(http.StatusServiceUnavailable, errorCode, lastCredentialFailure)
+				return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
+			}
 		}
-		if err == nil {
-			lease, err = selection.Acquire(ctx, excluded, false)
-		}
+		lease, err = selection.Acquire(ctx, excluded, false)
 		if err != nil {
 			errorCode := "upstream_unavailable"
 			var selectionFailure *SelectionUnavailableError
@@ -254,9 +318,14 @@ func (s *Service) executeImage(
 			return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
 		}
 		excluded[lease.Credential.ID] = true
+		if !s.selector.ReserveQuota(lease, max(1, requestedCount)) {
+			lease.Release()
+			continue
+		}
 		credential, err = s.accounts.EnsureCredential(ctx, lease.Credential, false)
 		if err != nil {
 			s.logger.Error("image_credential_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", lease.Credential.ID, "error", err)
+			recordAttempt(lease.Credential, audit.AttemptSourceCredential, "ensure_credential", attemptStarted, nil, err)
 			failedCredential := lease.Credential
 			lastCredentialFailure = &failedCredential
 			lastCredentialError = err
@@ -267,6 +336,7 @@ func (s *Service) executeImage(
 		response, err = execute(ctx, route.Provider, credential, route.UpstreamModel)
 		if err != nil {
 			s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
+			recordAttempt(credential, audit.AttemptSourceTransport, "image_execute", attemptStarted, nil, err)
 			if isSSOCredentialRejected(err, credential) {
 				s.markSSOCredentialRejected(ctx, credential, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
 				failedCredential := credential
@@ -275,16 +345,37 @@ func (s *Service) executeImage(
 				lease.Release()
 				continue
 			}
-			if !provider.IsMediaPostProcessingError(err) {
-				s.selector.MarkFailure(ctx, credential, 0, 0)
-			}
-			lease.Release()
-			errorCode := "upstream_unavailable"
 			if provider.IsMediaPostProcessingError(err) {
-				errorCode = "media_postprocessing_failed"
+				lease.Release()
+				writeFailureAudit(http.StatusBadGateway, "media_postprocessing_failed", &credential)
+				return nil, err
 			}
-			writeFailureAudit(http.StatusBadGateway, errorCode, &credential)
-			return nil, err
+			quotaRejected := provider.IsQuotaError(err)
+			if !quotaRejected && lease.routingCandidate != nil && lease.routingCandidate.QuotaWindow != nil &&
+				lease.routingCandidate.QuotaWindow.Remaining <= 1 && provider.IsQuotaMessage(err.Error()) {
+				quotaRejected = true
+			}
+			// Only a quota rejection proves the account never started
+			// generating, so it is the only transport error that may switch
+			// accounts. Retrying any other failure could duplicate an image
+			// that is already in flight upstream.
+			if !quotaRejected {
+				s.selector.MarkFailure(ctx, credential, 0, 0)
+				lease.Release()
+				writeFailureAudit(http.StatusBadGateway, "upstream_unavailable", &credential)
+				return nil, err
+			}
+			failedCredential := credential
+			lastCredentialFailure = &failedCredential
+			lastCredentialError = err
+			retryAfter := imageQuotaRetryAfter(lease, time.Now().UTC(), time.Duration(s.imageQuotaCooldown.Load()))
+			lease.Release()
+			s.selector.MarkModelQuotaExhausted(ctx, credential, lease.Billing, route.UpstreamModel, retryAfter)
+			if earliestQuotaRetry == 0 || retryAfter < earliestQuotaRetry {
+				earliestQuotaRetry = retryAfter
+			}
+			quotaExhausted = true
+			continue
 		}
 		if response.StatusCode == http.StatusUnauthorized && credential.AuthType == accountdomain.AuthTypeSSO {
 			_, _ = readRetryableBody(response.Body)
@@ -321,6 +412,10 @@ func (s *Service) executeImage(
 		break
 	}
 	if response == nil {
+		if quotaExhausted {
+			writeFailureAudit(http.StatusTooManyRequests, "upstream_quota_exhausted", lastCredentialFailure)
+			return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted, RetryAfter: earliestQuotaRetry}
+		}
 		writeFailureAudit(http.StatusServiceUnavailable, "upstream_unavailable", lastCredentialFailure)
 		if lastCredentialError == nil {
 			lastCredentialError = ErrNoAvailableAccount
@@ -334,11 +429,16 @@ func (s *Service) executeImage(
 		once.Do(func() {
 			successful := auditRequestSucceeded(response.StatusCode, errorCode)
 			lease.completeSelectorObservation(successful)
+			if successful {
+				lease.commitQuotaReservation()
+			}
 			lease.Release()
 			budget := newFinalizationBudget(string(operation), string(route.Provider))
 			record := auditBase
 			record.AccountID, record.AccountName, record.StatusCode = &accountID, credential.Name, response.StatusCode
 			record.ErrorCode = errorCode
+			record.AttemptCount = len(attempts)
+			record.Attempts = append([]audit.Attempt(nil), attempts...)
 			record.DurationMS, record.CreatedAt = time.Since(startedAt).Milliseconds(), time.Now().UTC()
 			applyAuditEgress(&record, egressTrace, route.Provider)
 			if successful {

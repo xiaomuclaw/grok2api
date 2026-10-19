@@ -104,6 +104,8 @@ type RoutingConfig struct {
 	CapacityWait                        string
 	MaxAttempts                         int
 	VideoMaxAttempts                    int
+	ImageMaxAttempts                    int
+	ImageQuotaCooldown                  string
 	PreferFreeBuild                     bool
 	MarkBuildChatDeniedAsReauth         bool
 	MarkBuildChatDeniedAsReauthProvided bool
@@ -404,9 +406,18 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		segmentedMinCandidates = value.Routing.SegmentedSelector.MinCandidates
 		segmentedWindowSize = value.Routing.SegmentedSelector.WindowSize
 	}
+	imageMaxAttempts := value.Routing.ImageMaxAttempts
+	if imageMaxAttempts <= 0 {
+		imageMaxAttempts = base.Routing.ImageMaxAttempts
+	}
+	imageQuotaCooldown := value.Routing.ImageQuotaCooldown
+	if imageQuotaCooldown <= 0 {
+		imageQuotaCooldown = base.Routing.ImageQuotaCooldown.Value()
+	}
 	base.Routing = config.RoutingConfig{
 		StickyTTL: config.Duration(value.Routing.StickyTTL), CooldownBase: config.Duration(value.Routing.CooldownBase),
 		CooldownMax: config.Duration(value.Routing.CooldownMax), CapacityWait: config.Duration(capacityWait), MaxAttempts: value.Routing.MaxAttempts, VideoMaxAttempts: value.Routing.VideoMaxAttempts,
+		ImageMaxAttempts: imageMaxAttempts, ImageQuotaCooldown: config.Duration(imageQuotaCooldown),
 		MarkBuildChatDeniedAsReauth: value.Routing.MarkBuildChatDeniedAsReauth,
 		PreferFreeBuild:             value.Routing.PreferFreeBuild,
 		AccountIsolatedConnections:  accountIsolatedConnections,
@@ -499,6 +510,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		Routing: settingsdomain.RoutingConfig{
 			StickyTTL: value.Routing.StickyTTL.Value(), CooldownBase: value.Routing.CooldownBase.Value(),
 			CooldownMax: value.Routing.CooldownMax.Value(), CapacityWait: value.Routing.CapacityWait.Value(), MaxAttempts: value.Routing.MaxAttempts, VideoMaxAttempts: value.Routing.VideoMaxAttempts,
+			ImageMaxAttempts: value.Routing.ImageMaxAttempts, ImageQuotaCooldown: value.Routing.ImageQuotaCooldown.Value(),
 			MarkBuildChatDeniedAsReauth: value.Routing.MarkBuildChatDeniedAsReauth,
 			PreferFreeBuild:             value.Routing.PreferFreeBuild,
 			AccountIsolatedConnections:  &accountIsolatedConnections,
@@ -596,6 +608,9 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Frontend.PublicAPIBaseURLOverride = strings.TrimSpace(input.Frontend.PublicAPIBaseURL)
 	next.Routing.MaxAttempts = input.Routing.MaxAttempts
 	next.Routing.VideoMaxAttempts = input.Routing.VideoMaxAttempts
+	if input.Routing.ImageMaxAttempts > 0 {
+		next.Routing.ImageMaxAttempts = input.Routing.ImageMaxAttempts
+	}
 	next.Routing.PreferFreeBuild = input.Routing.PreferFreeBuild
 	if input.Routing.AccountIsolatedConnectionsProvided {
 		next.Routing.AccountIsolatedConnections = input.Routing.AccountIsolatedConnections
@@ -655,6 +670,9 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		{"providerConsole.chatTimeout", input.ProviderConsole.ChatTimeout, func(value config.Duration) { next.Provider.Console.ChatTimeout = value }},
 		{"media.cleanupInterval", input.Media.CleanupInterval, func(value config.Duration) { next.Media.CleanupInterval = value }},
 		{"batch.randomDelay", input.Batch.RandomDelay, func(value config.Duration) { next.Batch.RandomDelay = value }},
+	}
+	if strings.TrimSpace(input.Routing.ImageQuotaCooldown) != "" {
+		durations = append(durations, durationInput{"routing.imageQuotaCooldown", input.Routing.ImageQuotaCooldown, func(value config.Duration) { next.Routing.ImageQuotaCooldown = value }})
 	}
 	if strings.TrimSpace(input.ProviderBuild.ResponseHeaderTimeout) != "" {
 		durations = append(durations, durationInput{"providerBuild.responseHeaderTimeout", input.ProviderBuild.ResponseHeaderTimeout, func(value config.Duration) { next.Provider.Build.ResponseHeaderTimeout = value }})
@@ -746,6 +764,7 @@ func toEditable(cfg config.Config) EditableConfig {
 		Routing: RoutingConfig{
 			StickyTTL: cfg.Routing.StickyTTL.String(), CooldownBase: cfg.Routing.CooldownBase.String(),
 			CooldownMax: cfg.Routing.CooldownMax.String(), CapacityWait: cfg.Routing.CapacityWait.String(), MaxAttempts: cfg.Routing.MaxAttempts, VideoMaxAttempts: cfg.Routing.VideoMaxAttempts,
+			ImageMaxAttempts: cfg.Routing.ImageMaxAttempts, ImageQuotaCooldown: cfg.Routing.ImageQuotaCooldown.String(),
 			MarkBuildChatDeniedAsReauth:         cfg.Routing.MarkBuildChatDeniedAsReauth,
 			MarkBuildChatDeniedAsReauthProvided: true,
 			PreferFreeBuild:                     cfg.Routing.PreferFreeBuild,

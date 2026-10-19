@@ -21,6 +21,7 @@ type selectionSession struct {
 	stickyKey        string
 	values           []account.RoutingCandidate
 	quotaConsumed    map[accountQuotaConsumptionKey]int
+	quotaReserved    map[accountQuotaConsumptionKey]int
 	normalCandidates []int
 	probeCandidates  []int
 	normalPlan       *candidatePlan
@@ -47,6 +48,7 @@ func (s *Selector) beginSelectionSessionForKey(ctx context.Context, provider acc
 		return nil, err
 	}
 	quotaConsumed := s.quotaConsumptionSnapshot(provider)
+	quotaReserved := s.quotaReservationSnapshot(provider)
 	healthOverrides := s.routingHealthSnapshot(provider, now)
 
 	session = &selectionSession{
@@ -58,6 +60,7 @@ func (s *Selector) beginSelectionSessionForKey(ctx context.Context, provider acc
 		stickyKey:       stickySessionKey(affinityKey),
 		values:          values,
 		quotaConsumed:   quotaConsumed,
+		quotaReserved:   quotaReserved,
 		staleCandidates: make(map[uint64]bool),
 	}
 	consideredCandidates := 0
@@ -110,7 +113,7 @@ func (s *Selector) beginSelectionSessionForKey(ctx context.Context, provider acc
 			quotaCandidates++
 			continue
 		}
-		if quotaWindowExhausted(candidate, quotaConsumed) {
+		if quotaWindowExhausted(candidate, quotaConsumed, quotaReserved) {
 			quotaCandidates++
 			if candidate.QuotaWindow.ResetAt != nil {
 				earliestRetry = earlierFuture(earliestRetry, *candidate.QuotaWindow.ResetAt, now)
@@ -218,6 +221,8 @@ func (session *selectionSession) acquireQuotaProbe(ctx context.Context, excluded
 		lease.QuotaProbe = true
 		lease.QuotaProbeKind = candidate.QuotaRecovery.Kind
 		lease.Billing = candidate.Billing
+		candidateCopy := candidate
+		lease.routingCandidate = &candidateCopy
 		return lease, nil
 	}
 	return nil, nil
@@ -353,6 +358,8 @@ func (session *selectionSession) completeNormalLease(ctx context.Context, lease 
 	}
 	lease.Billing = candidate.Billing
 	lease.QuotaMode = effectiveQuotaMode(candidate, session.quotaMode)
+	candidateCopy := candidate
+	lease.routingCandidate = &candidateCopy
 	return lease, nil
 }
 

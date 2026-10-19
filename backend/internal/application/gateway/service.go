@@ -210,6 +210,8 @@ type Service struct {
 	responses                   repository.ResponseRepository
 	maxAttempts                 atomic.Int64
 	videoMaxAttempts            atomic.Int64
+	imageMaxAttempts            atomic.Int64
+	imageQuotaCooldown          atomic.Int64
 	buildForbiddenReauth        atomic.Pointer[buildForbiddenReauthPolicy]
 	requestTimeout              atomic.Int64
 	mediaJobs                   repository.MediaJobRepository
@@ -486,6 +488,19 @@ func (s *Service) UpdateMaxAttempts(maxAttempts int) { s.maxAttempts.Store(int64
 // 0 is treated as the general default pool size for legacy configs.
 func (s *Service) UpdateVideoMaxAttempts(maxAttempts int) {
 	s.videoMaxAttempts.Store(int64(maxAttempts))
+}
+
+// UpdateImageMaxAttempts configures quota-rejection account failover for image
+// requests. Non-quota failures are never retried because image generation is
+// not idempotent.
+func (s *Service) UpdateImageMaxAttempts(maxAttempts int) {
+	s.imageMaxAttempts.Store(int64(maxAttempts))
+}
+
+// UpdateImageQuotaCooldown configures the fallback block applied to an image
+// account whose quota window has no known reset time.
+func (s *Service) UpdateImageQuotaCooldown(cooldown time.Duration) {
+	s.imageQuotaCooldown.Store(int64(cooldown))
 }
 
 // UpdateMarkBuildChatDeniedAsReauth 热更新 Build chat 永久拒绝是否标 reauthRequired。

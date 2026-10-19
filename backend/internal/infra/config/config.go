@@ -39,6 +39,7 @@ const (
 	maxRoutingCooldown     = 24 * time.Hour
 	maxRoutingCapacityWait = 30 * time.Second
 	maxRoutingAttempts     = 65535
+	maxImageAttempts       = 20
 	minAuditFlushInterval  = 10 * time.Millisecond
 	maxAuditFlushInterval  = time.Minute
 	maxAuditBufferSize     = 262144
@@ -221,7 +222,14 @@ type RoutingConfig struct {
 	CapacityWait     Duration `yaml:"capacityWait"`
 	MaxAttempts      int      `yaml:"maxAttempts"`
 	VideoMaxAttempts int      `yaml:"videoMaxAttempts"`
-	PreferFreeBuild  bool     `yaml:"preferFreeBuild"`
+	// ImageMaxAttempts caps account switches for image requests that were
+	// rejected for quota before any generation started. Image generation is
+	// not idempotent, so this stays deliberately small.
+	ImageMaxAttempts int `yaml:"imageMaxAttempts"`
+	// ImageQuotaCooldown blocks an image account whose quota is exhausted when
+	// the upstream quota window has no known reset time.
+	ImageQuotaCooldown Duration `yaml:"imageQuotaCooldown"`
+	PreferFreeBuild    bool     `yaml:"preferFreeBuild"`
 	// MarkBuildChatDeniedAsReauth 为 true 时，Build chat 权限拒绝标 reauthRequired，默认 false。
 	MarkBuildChatDeniedAsReauth bool     `yaml:"markBuildChatDeniedAsReauth"`
 	AccountIsolatedConnections  bool     `yaml:"accountIsolatedConnections"`
@@ -675,7 +683,7 @@ func (c Config) Validate() error {
 	if c.Provider.Web.RecoveryBackoffBase.Value() < 5*time.Second || c.Provider.Web.RecoveryBackoffMax.Value() < c.Provider.Web.RecoveryBackoffBase.Value() || c.Provider.Web.RecoveryBackoffMax.Value() > 6*time.Hour {
 		return errors.New("provider.web 恢复退避配置无效")
 	}
-	if c.Routing.StickyTTL.Value() <= 0 || c.Routing.StickyTTL.Value() > maxRoutingTTL || c.Routing.CooldownBase.Value() <= 0 || c.Routing.CooldownMax.Value() < c.Routing.CooldownBase.Value() || c.Routing.CooldownMax.Value() > maxRoutingCooldown || c.Routing.CapacityWait.Value() <= 0 || c.Routing.CapacityWait.Value() > maxRoutingCapacityWait || (c.Routing.MaxAttempts < unlimitedRoutingAttempts || c.Routing.MaxAttempts == 0 || c.Routing.MaxAttempts > maxRoutingAttempts) || (c.Routing.VideoMaxAttempts < unlimitedRoutingAttempts || c.Routing.VideoMaxAttempts > maxRoutingAttempts) {
+	if c.Routing.StickyTTL.Value() <= 0 || c.Routing.StickyTTL.Value() > maxRoutingTTL || c.Routing.CooldownBase.Value() <= 0 || c.Routing.CooldownMax.Value() < c.Routing.CooldownBase.Value() || c.Routing.CooldownMax.Value() > maxRoutingCooldown || c.Routing.CapacityWait.Value() <= 0 || c.Routing.CapacityWait.Value() > maxRoutingCapacityWait || (c.Routing.MaxAttempts < unlimitedRoutingAttempts || c.Routing.MaxAttempts == 0 || c.Routing.MaxAttempts > maxRoutingAttempts) || (c.Routing.VideoMaxAttempts < unlimitedRoutingAttempts || c.Routing.VideoMaxAttempts > maxRoutingAttempts) || c.Routing.ImageMaxAttempts < 1 || c.Routing.ImageMaxAttempts > maxImageAttempts || c.Routing.ImageQuotaCooldown.Value() < time.Minute || c.Routing.ImageQuotaCooldown.Value() > maxRoutingCooldown {
 		return errors.New("routing 配置无效")
 	}
 	if c.Routing.SegmentedMinCandidates < 100 || c.Routing.SegmentedMinCandidates > 1000000 ||
@@ -936,6 +944,8 @@ func defaultConfig() Config {
 			CapacityWait:                Duration(500 * time.Millisecond),
 			MaxAttempts:                 999,
 			VideoMaxAttempts:            999,
+			ImageMaxAttempts:            5,
+			ImageQuotaCooldown:          Duration(10 * time.Minute),
 			MarkBuildChatDeniedAsReauth: false,
 			PreferFreeBuild:             false,
 			AccountIsolatedConnections:  false,

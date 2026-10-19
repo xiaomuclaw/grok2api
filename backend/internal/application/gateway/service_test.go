@@ -2688,6 +2688,129 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	}
 }
 
+func TestImageQuotaRejectionSwitchesAccountAndRecordsAttempt(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "image-quota-failover.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	primary, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+		Name: "web-image-primary", SourceKey: "web-image-primary", EncryptedAccessToken: "encrypted-primary", Enabled: true,
+		AuthStatus: account.AuthStatusActive, MaxConcurrent: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+		Name: "web-image-backup", SourceKey: "web-image-backup", EncryptedAccessToken: "encrypted-backup", Enabled: true,
+		AuthStatus: account.AuthStatusActive, MaxConcurrent: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, credential := range []account.Credential{primary, backup} {
+		if err := accountRepo.SaveQuotaWindows(ctx, credential.ID, account.WebTierSuper, now, []account.QuotaWindow{{
+			AccountID: credential.ID, Mode: "fast", Remaining: 3, Total: 10,
+			WindowSeconds: 3600, Source: account.QuotaSourceUpstream, SyncedAt: &now,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := modelRepo.UpsertRoutes(ctx, []modeldomain.Route{{
+		PublicID: "grok-imagine-image", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-quality",
+		Capability: modeldomain.CapabilityImage, Enabled: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range []account.Credential{primary, backup} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-imagine-image-quality"}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "image-quota-key", Prefix: "image-quota-key", SecretHash: "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", EncryptedSecret: "encrypted-key",
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &webImageStreamAdapter{synced: make(chan string, 1), quotaFailures: 1}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	runQuotaRefreshWorkers(t, accountService)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, responseRepo, 1)
+	service.UpdateMaxAttempts(5)
+	service.UpdateImageMaxAttempts(5)
+	service.UpdateImageQuotaCooldown(30 * time.Minute)
+
+	result, err := service.GenerateImage(ctx, ImageGenerationInput{
+		RequestID: "req-image-quota-switch", ClientKey: key, PublicModel: "grok-imagine-image",
+		Prompt: "test", Count: 1, Resolution: "1k", ResponseFormat: "url",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(result.Body); err != nil {
+		t.Fatal(err)
+	}
+	result.Finalize(Usage{}, "", "")
+	_ = result.Body.Close()
+
+	attempts := adapter.Attempts()
+	if len(attempts) != 2 || attempts[0] == attempts[1] {
+		t.Fatalf("adapter attempts = %#v", attempts)
+	}
+	if attempts[0] != primary.ID {
+		t.Fatalf("first image attempt account = %d, want primary %d", attempts[0], primary.ID)
+	}
+	logs, total, err := auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 1 || len(logs) != 1 {
+		t.Fatalf("audit logs=%#v total=%d err=%v", logs, total, err)
+	}
+	if logs[0].StatusCode != http.StatusOK || logs[0].AttemptCount != 1 {
+		t.Fatalf("quota switch audit = %#v", logs[0])
+	}
+	detail, err := auditRepo.Get(ctx, logs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Attempts) != 1 || !strings.Contains(detail.Attempts[0].TransportError, "quota") || detail.Attempts[0].AccountID == nil || *detail.Attempts[0].AccountID != primary.ID {
+		t.Fatalf("quota switch attempt = %#v", detail.Attempts)
+	}
+	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderWeb, 0, "grok-imagine-image-quality", "fast")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := false
+	for _, candidate := range candidates {
+		if candidate.Credential.ID != primary.ID {
+			continue
+		}
+		if candidate.ModelQuotaBlock == nil || !candidate.ModelQuotaBlock.CooldownUntil.After(time.Now().Add(20*time.Minute)) {
+			t.Fatalf("primary quota block = %#v", candidate.ModelQuotaBlock)
+		}
+		blocked = true
+	}
+	if !blocked {
+		t.Fatalf("primary account missing from routing candidates: %#v", candidates)
+	}
+}
+
 func TestWebImageUnauthorizedMarksInvalidAndSwitchesAccount(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "web-image-401.db"))
@@ -4607,6 +4730,7 @@ type webImageStreamAdapter struct {
 	attempts           []uint64
 	unauthorizedID     uint64
 	forbiddenRemaining int
+	quotaFailures      int
 }
 
 type webChatQuotaAdapter struct {
@@ -4674,7 +4798,14 @@ func (a *webImageStreamAdapter) GenerateImage(ctx context.Context, request provi
 	if forbidden {
 		a.forbiddenRemaining--
 	}
+	quotaFailure := a.quotaFailures > 0
+	if quotaFailure {
+		a.quotaFailures--
+	}
 	a.mu.Unlock()
+	if quotaFailure {
+		return nil, &provider.QuotaError{Code: "quota_exhausted", Message: "image quota exhausted", ModelScoped: true}
+	}
 	if forbidden {
 		return &provider.Response{
 			StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header),

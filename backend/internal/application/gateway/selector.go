@@ -30,6 +30,8 @@ type accountLease struct {
 	QuotaMode           string
 	routingCandidate    *account.RoutingCandidate
 	selectorObservation *selectorLeaseObservation
+	quotaCommit         func()
+	quotaRelease        func()
 	release             func()
 }
 
@@ -316,12 +318,26 @@ func (e *SelectionUnavailableError) Code() string {
 	return "upstream_unavailable"
 }
 
+func (l *accountLease) commitQuotaReservation() {
+	if l == nil || l.quotaCommit == nil {
+		return
+	}
+	l.quotaCommit()
+	l.quotaCommit = nil
+	l.quotaRelease = nil
+}
+
 func (l *accountLease) Release() {
 	if l == nil {
 		return
 	}
 	if l.selectorObservation != nil {
 		l.selectorObservation.completeRelease()
+	}
+	if l.quotaRelease != nil {
+		l.quotaRelease()
+		l.quotaRelease = nil
+		l.quotaCommit = nil
 	}
 	if l.release != nil {
 		l.release()
@@ -367,6 +383,7 @@ type Selector struct {
 	lastSuccessAt          map[uint64]time.Time
 	healthOverrides        map[uint64]routingHealthOverride
 	quotaConsumed          map[quotaConsumptionKey]int
+	quotaReserved          map[quotaConsumptionKey]int
 	staleFallbackLoggedAt  map[string]time.Time
 	candidates             map[candidateCacheKey]candidateSnapshot
 	routingBases           map[routingBaseCacheKey]routingBaseSnapshot
@@ -539,6 +556,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 		return nil, err
 	}
 	quotaConsumed := s.quotaConsumptionSnapshot(provider)
+	quotaReserved := s.quotaReservationSnapshot(provider)
 	healthOverrides := s.routingHealthSnapshot(provider, now)
 	// 仅保留候选下标，避免每个请求复制包含凭据、计费和额度结构的完整账号切片。
 	normalCandidates := make([]int, 0, len(values))
@@ -596,7 +614,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 			quotaCandidates++
 			continue
 		}
-		if quotaWindowExhausted(candidate, quotaConsumed) {
+		if quotaWindowExhausted(candidate, quotaConsumed, quotaReserved) {
 			quotaCandidates++
 			if candidate.QuotaWindow.ResetAt != nil {
 				earliestRetry = earlierFuture(earliestRetry, *candidate.QuotaWindow.ResetAt, now)
@@ -862,6 +880,7 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 		return nil, err
 	}
 	quotaConsumed := s.quotaConsumptionSnapshot(provider)
+	quotaReserved := s.quotaReservationSnapshot(provider)
 	healthOverrides := s.routingHealthSnapshot(provider, now)
 	for _, candidate := range values {
 		value := applyHealthSnapshot(candidate.Credential, healthOverrides)
@@ -921,7 +940,7 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 			if candidate.Billing != nil && candidate.Billing.IsExhausted(value.MinimumRemaining) {
 				return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted}
 			}
-			if quotaWindowExhausted(candidate, quotaConsumed) {
+			if quotaWindowExhausted(candidate, quotaConsumed, quotaReserved) {
 				var retryAfter time.Duration
 				if candidate.QuotaWindow.ResetAt != nil {
 					retryAfter = retryDelay(now, *candidate.QuotaWindow.ResetAt)
@@ -1168,6 +1187,86 @@ func (s *Selector) MarkQuotaStateChanged(provider account.Provider, accountIDs .
 	}
 }
 
+// ReserveQuota reserves in-flight image units against the account's remote
+// quota window. Without this, four concurrent requests can all pass the
+// completed-consumption check when an account only has one image left.
+func (s *Selector) ReserveQuota(lease *accountLease, units int) bool {
+	if lease == nil || lease.QuotaProbe || lease.routingCandidate == nil {
+		return true
+	}
+	window := lease.routingCandidate.QuotaWindow
+	if window == nil {
+		return true
+	}
+	mode := strings.TrimSpace(lease.QuotaMode)
+	if mode == "" {
+		mode = strings.TrimSpace(window.Mode)
+	}
+	if mode == "" || mode == "weekly" {
+		return true
+	}
+	if units <= 0 {
+		units = 1
+	}
+	if window.Remaining <= 0 {
+		return false
+	}
+	key := quotaConsumptionKey{provider: lease.Credential.Provider, accountID: lease.Credential.ID, mode: mode}
+	s.quotaMu.Lock()
+	if s.quotaReserved == nil {
+		s.quotaReserved = make(map[quotaConsumptionKey]int)
+	}
+	if window.Remaining-s.quotaConsumed[key]-s.quotaReserved[key] < units {
+		s.quotaMu.Unlock()
+		return false
+	}
+	s.quotaReserved[key] += units
+	s.quotaMu.Unlock()
+	lease.quotaRelease = func() { s.releaseQuota(key, units) }
+	lease.quotaCommit = func() { s.commitQuota(key, units) }
+	return true
+}
+
+func (s *Selector) releaseQuota(key quotaConsumptionKey, units int) {
+	s.quotaMu.Lock()
+	remaining := s.quotaReserved[key] - units
+	if remaining > 0 {
+		s.quotaReserved[key] = remaining
+	} else {
+		delete(s.quotaReserved, key)
+	}
+	s.quotaMu.Unlock()
+}
+
+// commitQuota removes the reservation without consuming it. The success
+// finalization path calls ConsumeQuota immediately afterwards.
+func (s *Selector) commitQuota(key quotaConsumptionKey, units int) {
+	s.quotaMu.Lock()
+	remaining := s.quotaReserved[key] - units
+	if remaining > 0 {
+		s.quotaReserved[key] = remaining
+	} else {
+		delete(s.quotaReserved, key)
+	}
+	s.quotaMu.Unlock()
+}
+
+func (s *Selector) quotaReservationSnapshot(provider account.Provider) map[accountQuotaConsumptionKey]int {
+	s.quotaMu.RLock()
+	if len(s.quotaReserved) == 0 {
+		s.quotaMu.RUnlock()
+		return nil
+	}
+	result := make(map[accountQuotaConsumptionKey]int)
+	for key, amount := range s.quotaReserved {
+		if key.provider == provider {
+			result[accountQuotaConsumptionKey{accountID: key.accountID, mode: key.mode}] = amount
+		}
+	}
+	s.quotaMu.RUnlock()
+	return result
+}
+
 // ConsumeQuota records a small local delta instead of Copy-on-Write cloning
 // every cached candidate/base slice. Selection snapshots remain immutable for
 // concurrent requests, while the next request observes the consumed amount.
@@ -1180,6 +1279,13 @@ func (s *Selector) ConsumeQuota(provider account.Provider, accountID uint64, mod
 		s.quotaConsumed = make(map[quotaConsumptionKey]int)
 	}
 	key := quotaConsumptionKey{provider: provider, accountID: accountID, mode: mode}
+	if reserved := s.quotaReserved[key]; reserved > 0 {
+		if amount >= reserved {
+			delete(s.quotaReserved, key)
+		} else {
+			s.quotaReserved[key] = reserved - amount
+		}
+	}
 	s.quotaConsumed[key] += amount
 	s.quotaMu.Unlock()
 }
@@ -1200,11 +1306,15 @@ func (s *Selector) quotaConsumptionSnapshot(provider account.Provider) map[accou
 	return result
 }
 
-func quotaWindowExhausted(candidate account.RoutingCandidate, consumed map[accountQuotaConsumptionKey]int) bool {
+func quotaWindowExhausted(candidate account.RoutingCandidate, consumed map[accountQuotaConsumptionKey]int, reserved ...map[accountQuotaConsumptionKey]int) bool {
 	if candidate.QuotaWindow == nil {
 		return false
 	}
-	remaining := candidate.QuotaWindow.Remaining - consumed[accountQuotaConsumptionKey{accountID: candidate.Credential.ID, mode: candidate.QuotaWindow.Mode}]
+	key := accountQuotaConsumptionKey{accountID: candidate.Credential.ID, mode: candidate.QuotaWindow.Mode}
+	remaining := candidate.QuotaWindow.Remaining - consumed[key]
+	if len(reserved) > 0 && reserved[0] != nil {
+		remaining -= reserved[0][key]
+	}
 	return remaining <= 0
 }
 

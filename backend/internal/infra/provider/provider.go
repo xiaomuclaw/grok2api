@@ -24,6 +24,55 @@ var (
 	ErrBirthDateAlreadySet  = errors.New("upstream birth date is already set")
 )
 
+// QuotaError marks an upstream rejection caused by account or model quota.
+// It is retryable on another account, and the failed account should be blocked
+// for the affected model until its quota resets.
+type QuotaError struct {
+	Code        string
+	Message     string
+	ModelScoped bool
+}
+
+func (e *QuotaError) Error() string {
+	if e == nil {
+		return "上游账号额度已耗尽"
+	}
+	text := strings.TrimSpace(strings.Join([]string{e.Code, e.Message}, " "))
+	if text == "" {
+		return "上游账号额度已耗尽"
+	}
+	if len(text) > 300 {
+		text = text[:300]
+	}
+	return "上游账号额度已耗尽: " + text
+}
+
+// IsQuotaError reports whether err is an upstream quota rejection.
+func IsQuotaError(err error) bool {
+	var value *QuotaError
+	return errors.As(err, &value)
+}
+
+// IsQuotaMessage checks whether an upstream WebSocket/error message describes
+// quota or rate-limit exhaustion. Keep the patterns account-scoped: generic
+// timeouts and WebSocket transport failures must stay transient.
+func IsQuotaMessage(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return false
+	}
+	for _, pattern := range []string{
+		"quota", "rate_limit", "rate limit", "rate-limit", "too many requests",
+		"usage limit", "usage_limit", "exhausted", "insufficient", "out of credits",
+		"credit limit", "limit reached", "daily limit", "image limit",
+	} {
+		if strings.Contains(text, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // HTTPStatusError preserves the upstream status when a streaming or asynchronous Provider cannot return a Response.
 type HTTPStatusError interface {
 	error

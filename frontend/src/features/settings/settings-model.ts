@@ -16,6 +16,10 @@ const byteSizeSchema = z.object({ value: z.number().positive(), unit: z.enum(["M
 const routingTTLDuration = durationSchema.refine((value) => durationSeconds(value) <= 30 * 86_400);
 const routingCooldownDuration = durationSchema.refine((value) => durationSeconds(value) <= 86_400);
 const routingCapacityWaitDuration = durationSchema.refine((value) => durationSeconds(value) <= 30);
+const imageQuotaCooldownDuration = durationSchema.refine((value) => {
+  const seconds = durationSeconds(value);
+  return seconds >= 60 && seconds <= 86_400;
+});
 const auditFlushDuration = durationSchema.refine((value) => {
   const seconds = durationSeconds(value);
   return seconds >= 0.01 && seconds <= 60;
@@ -144,6 +148,8 @@ export const settingsSchema = z.object({
     capacityWait: routingCapacityWaitDuration,
     maxAttempts: z.union([z.literal(UNLIMITED_ROUTING_ATTEMPTS), positiveInteger.max(65535)]),
     videoMaxAttempts: z.union([z.literal(UNLIMITED_ROUTING_ATTEMPTS), positiveInteger.max(65535)]),
+    imageMaxAttempts: positiveInteger.max(20),
+    imageQuotaCooldown: imageQuotaCooldownDuration,
     preferFreeBuild: z.boolean(),
     markBuildChatDeniedAsReauth: z.boolean(),
     accountIsolatedConnections: z.boolean(),
@@ -215,6 +221,8 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
     routing: {
       stickyTTL: parseDuration(config.routing.stickyTTL), cooldownBase: parseDuration(config.routing.cooldownBase),
       cooldownMax: parseDuration(config.routing.cooldownMax), capacityWait: parseDuration(config.routing.capacityWait), maxAttempts: config.routing.maxAttempts, videoMaxAttempts: !config.routing.videoMaxAttempts || config.routing.videoMaxAttempts === 0 ? 999 : config.routing.videoMaxAttempts,
+      imageMaxAttempts: !config.routing.imageMaxAttempts || config.routing.imageMaxAttempts <= 0 ? 5 : config.routing.imageMaxAttempts,
+      imageQuotaCooldown: parseDuration(config.routing.imageQuotaCooldown || "10m"),
       preferFreeBuild: config.routing.preferFreeBuild,
       markBuildChatDeniedAsReauth: config.routing.markBuildChatDeniedAsReauth,
       accountIsolatedConnections: config.routing.accountIsolatedConnections,
@@ -266,6 +274,8 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
     routing: {
       stickyTTL: formatDuration(config.routing.stickyTTL), cooldownBase: formatDuration(config.routing.cooldownBase),
       cooldownMax: formatDuration(config.routing.cooldownMax), capacityWait: formatDuration(config.routing.capacityWait), maxAttempts: config.routing.maxAttempts, videoMaxAttempts: !config.routing.videoMaxAttempts || config.routing.videoMaxAttempts === 0 ? 999 : config.routing.videoMaxAttempts,
+      imageMaxAttempts: config.routing.imageMaxAttempts,
+      imageQuotaCooldown: formatDuration(config.routing.imageQuotaCooldown),
       preferFreeBuild: config.routing.preferFreeBuild,
       markBuildChatDeniedAsReauth: config.routing.markBuildChatDeniedAsReauth,
       accountIsolatedConnections: config.routing.accountIsolatedConnections,
